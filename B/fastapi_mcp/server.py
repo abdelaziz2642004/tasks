@@ -493,7 +493,7 @@ class FastApiMCP:
             A tuple of (media_type, charset). charset may be None.
         """
         if not content_type_header:
-            return "application/octet-stream", None
+            return "", None
 
         parts = content_type_header.split(";")
         media_type = parts[0].strip().lower()
@@ -507,6 +507,142 @@ class FastApiMCP:
 
         return media_type, charset
 
+    def _detect_content_type_from_content(self, content: bytes) -> Optional[str]:
+        """
+        Detect content type by inspecting the actual content bytes.
+
+        Args:
+            content: The raw response content bytes
+
+        Returns:
+            Detected media type or None if unknown
+        """
+        if not content:
+            return None
+
+        # Check for common binary file signatures (magic bytes)
+        # PNG
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        # JPEG
+        if content.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        # GIF
+        if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+            return "image/gif"
+        # WebP
+        if content.startswith(b"RIFF") and len(content) > 12 and content[8:12] == b"WEBP":
+            return "image/webp"
+        # PDF
+        if content.startswith(b"%PDF"):
+            return "application/pdf"
+        # ZIP (and related formats like DOCX, XLSX)
+        if content.startswith(b"PK\x03\x04"):
+            return "application/zip"
+        # GZIP
+        if content.startswith(b"\x1f\x8b"):
+            return "application/gzip"
+
+        # Try to detect text-based formats by examining content
+        try:
+            # Try decoding as UTF-8
+            text = content.decode("utf-8").strip()
+
+            # Check for JSON (starts with { or [)
+            if text.startswith(("{", "[")):
+                try:
+                    json.loads(text)
+                    return "application/json"
+                except json.JSONDecodeError:
+                    pass
+
+            # Check for HTML first (before XML, since HTML can look like XML)
+            text_lower = text.lower()
+            if (
+                text_lower.startswith("<!doctype html")
+                or text_lower.startswith("<html")
+                or ("<!doctype" in text_lower and "html" in text_lower[:100])
+            ):
+                return "text/html"
+
+            # Check for XML (starts with <?xml or looks like XML but not HTML)
+            if text.startswith("<?xml") or (text.startswith("<") and ">" in text and "<html" not in text_lower):
+                return "application/xml"
+
+            # If it decoded successfully and looks like text, assume plain text
+            # Check if content is mostly printable
+            printable_ratio = sum(1 for c in text[:1000] if c.isprintable() or c in "\n\r\t") / min(len(text), 1000)
+            if printable_ratio > 0.9:
+                return "text/plain"
+
+        except (UnicodeDecodeError, ValueError):
+            pass
+
+        return None
+
+    def _is_binary_content(self, content: bytes) -> bool:
+        """
+        Check if content appears to be binary (non-text) data.
+
+        Args:
+            content: The raw response content bytes
+
+        Returns:
+            True if content appears to be binary, False if it appears to be text
+        """
+        if not content:
+            return False
+
+        # Check for null bytes (strong indicator of binary)
+        if b"\x00" in content[:1024]:
+            return True
+
+        # Try to decode as UTF-8
+        try:
+            text = content[:1024].decode("utf-8")
+            # Check if content is mostly printable
+            printable_ratio = sum(1 for c in text if c.isprintable() or c in "\n\r\t") / len(text)
+            return printable_ratio < 0.7
+        except UnicodeDecodeError:
+            return True
+
+    def _format_xml_for_llm(self, content: bytes) -> str:
+        """
+        Format XML content for better LLM readability.
+
+        Args:
+            content: The raw XML content bytes
+
+        Returns:
+            Formatted XML string with proper indentation
+        """
+        import xml.dom.minidom
+
+        try:
+            dom = xml.dom.minidom.parseString(content)
+            # Use toprettyxml with proper settings
+            formatted = dom.toprettyxml(indent="  ", encoding=None)
+
+            # Clean up the output: remove extra blank lines and normalize whitespace
+            lines = []
+            for line in formatted.split("\n"):
+                stripped = line.rstrip()
+                # Skip empty lines but keep lines with just whitespace for structure
+                if stripped or (lines and lines[-1].strip()):
+                    lines.append(stripped)
+
+            # Remove trailing empty lines
+            while lines and not lines[-1].strip():
+                lines.pop()
+
+            return "\n".join(lines)
+        except Exception:
+            # If XML parsing fails, try to return as decoded text
+            try:
+                return content.decode("utf-8")
+            except UnicodeDecodeError:
+                return content.decode("latin-1")
+
     # Maximum size for binary content to include base64 data (1MB)
     _MAX_BINARY_SIZE_FOR_BASE64 = 1024 * 1024
     # Maximum size for images to return as ImageContent (5MB)
@@ -519,6 +655,8 @@ class FastApiMCP:
         """
         Format an HTTP response based on its content type for optimal LLM consumption.
 
+        Uses both the Content-Type header and content inspection for robust detection.
+
         Args:
             response: The httpx Response object
 
@@ -526,74 +664,127 @@ class FastApiMCP:
             A list of MCP content types appropriate for the response
         """
         content_type_header = response.headers.get("content-type")
-        media_type, charset = self._parse_content_type(content_type_header)
+        header_media_type, charset = self._parse_content_type(content_type_header)
         content_length = len(response.content)
 
         # Handle empty responses (e.g., 204 No Content)
         if not response.content:
             return [types.TextContent(type="text", text="")]
 
+        # Detect content type from actual content for validation/fallback
+        detected_type = self._detect_content_type_from_content(response.content)
+
+        # Determine the effective media type to use
+        # Priority: header type if valid, otherwise detected type, otherwise generic
+        if header_media_type:
+            media_type = header_media_type
+        elif detected_type:
+            media_type = detected_type
+        else:
+            media_type = "application/octet-stream"
+
         # Handle JSON responses
-        if media_type in ("application/json", "application/ld+json") or media_type.endswith("+json"):
+        # Try JSON parsing if header says JSON OR if content looks like JSON
+        is_json_header = media_type in ("application/json", "application/ld+json") or media_type.endswith("+json")
+        is_json_detected = detected_type == "application/json"
+
+        if is_json_header or is_json_detected:
             try:
                 result = response.json()
                 result_text = json.dumps(result, indent=2, ensure_ascii=False)
                 return [types.TextContent(type="text", text=result_text)]
             except (json.JSONDecodeError, ValueError):
-                # Fall through to text handling if JSON parsing fails
-                # ValueError can be raised by httpx for invalid JSON
-                pass
+                # If header claimed JSON but parsing failed, continue to other handlers
+                if is_json_header and not is_json_detected:
+                    pass  # Fall through to try other content types
 
-        # Handle image responses - return as ImageContent with base64 encoding
-        if media_type.startswith("image/"):
+        # Handle image responses - check both header and magic bytes
+        is_image_header = media_type.startswith("image/")
+        is_image_detected = detected_type and detected_type.startswith("image/")
+
+        if is_image_header or is_image_detected:
+            # Use detected type if available (more reliable), otherwise header type
+            image_media_type = detected_type if is_image_detected else media_type
+
             if content_length > self._MAX_IMAGE_SIZE:
-                # For very large images, return a summary instead
                 return [
                     types.TextContent(
                         type="text",
-                        text=f"[Image content: {media_type}, {content_length:,} bytes]\n\n"
+                        text=f"[Image content: {image_media_type}, {content_length:,} bytes]\n\n"
                         f"Image is too large to include inline ({content_length / (1024 * 1024):.2f} MB). "
                         f"Consider downloading separately or requesting a smaller image.",
                     )
                 ]
             image_data = base64.standard_b64encode(response.content).decode("ascii")
-            return [types.ImageContent(type="image", data=image_data, mimeType=media_type)]
+            return [types.ImageContent(type="image", data=image_data, mimeType=image_media_type)]
 
-        # Handle XML responses - format for readability
-        if media_type in ("application/xml", "text/xml") or media_type.endswith("+xml"):
+        # Handle XML responses - check both header and content detection
+        is_xml_header = media_type in ("application/xml", "text/xml") or media_type.endswith("+xml")
+        is_xml_detected = detected_type == "application/xml"
+
+        if is_xml_header or is_xml_detected:
+            formatted_xml = self._format_xml_for_llm(response.content)
+            return [types.TextContent(type="text", text=f"[XML Content]\n\n{formatted_xml}")]
+
+        # Handle HTML responses
+        is_html_header = media_type in ("text/html", "application/xhtml+xml")
+        is_html_detected = detected_type == "text/html"
+
+        if is_html_header or is_html_detected:
             try:
-                # Try to pretty-print XML
-                import xml.dom.minidom
+                html_text = response.text
+            except (UnicodeDecodeError, ValueError):
+                html_text = response.content.decode("utf-8", errors="replace")
+            return [types.TextContent(type="text", text=f"[HTML Content]\n\n{html_text}")]
 
-                dom = xml.dom.minidom.parseString(response.content)
-                formatted_xml = dom.toprettyxml(indent="  ")
-                # Remove extra blank lines that toprettyxml adds
-                lines = [line for line in formatted_xml.split("\n") if line.strip()]
-                return [types.TextContent(type="text", text="\n".join(lines))]
-            except Exception:
-                # If XML parsing fails, return as plain text
-                return [types.TextContent(type="text", text=response.text)]
-
-        # Handle HTML responses - return with content type indicator
-        if media_type in ("text/html", "application/xhtml+xml"):
-            return [types.TextContent(type="text", text=f"[HTML Content]\n\n{response.text}")]
+        # Handle PDF responses
+        is_pdf = media_type == "application/pdf" or detected_type == "application/pdf"
+        if is_pdf:
+            if content_length > self._MAX_BINARY_SIZE_FOR_BASE64:
+                return [
+                    types.TextContent(
+                        type="text",
+                        text=f"[PDF Document: {content_length:,} bytes]\n\n"
+                        f"PDF is too large to include inline ({content_length / (1024 * 1024):.2f} MB). "
+                        f"The document should be downloaded separately for viewing.",
+                    )
+                ]
+            binary_data = base64.standard_b64encode(response.content).decode("ascii")
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"[PDF Document: {content_length:,} bytes]\n\nBase64 encoded data:\n{binary_data}",
+                )
+            ]
 
         # Handle plain text and other text types
-        if media_type.startswith("text/"):
-            return [types.TextContent(type="text", text=response.text)]
+        is_text_header = media_type.startswith("text/")
+        is_text_detected = detected_type == "text/plain"
 
-        # Handle other binary responses (PDFs, audio, video, etc.)
-        # First try to decode as text in case content-type is misconfigured
-        try:
-            text = response.text
-            if text and (text.isprintable() or "\n" in text or "\t" in text):
+        if is_text_header or is_text_detected:
+            try:
+                return [types.TextContent(type="text", text=response.text)]
+            except (UnicodeDecodeError, ValueError):
+                # If decoding fails, try with replacement
+                return [types.TextContent(type="text", text=response.content.decode("utf-8", errors="replace"))]
+
+        # For unknown content types, check if it's actually text
+        if not self._is_binary_content(response.content):
+            try:
+                text = response.content.decode("utf-8")
+                # Additional check: try to parse as JSON in case header was wrong
+                try:
+                    result = json.loads(text)
+                    result_text = json.dumps(result, indent=2, ensure_ascii=False)
+                    return [types.TextContent(type="text", text=result_text)]
+                except json.JSONDecodeError:
+                    pass
                 return [types.TextContent(type="text", text=text)]
-        except (UnicodeDecodeError, ValueError):
-            pass
+            except UnicodeDecodeError:
+                pass
 
-        # For true binary content, check size and format appropriately
+        # True binary content - check size and format appropriately
         if content_length > self._MAX_BINARY_SIZE_FOR_BASE64:
-            # Large binary: return summary only
             return [
                 types.TextContent(
                     type="text",

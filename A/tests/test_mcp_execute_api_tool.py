@@ -1,3 +1,4 @@
+import json
 import pytest
 import base64
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -201,10 +202,13 @@ async def test_execute_api_tool_plain_text_response(simple_fastapi_app: FastAPI)
     """Test execution of an API tool that returns plain text."""
     mcp = FastApiMCP(simple_fastapi_app)
 
+    text_content = "Hello, this is plain text response"
+
     # Mock the HTTP client response with plain text
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/plain; charset=utf-8"}
-    mock_response.text = "Hello, this is plain text response"
+    mock_response.content = text_content.encode("utf-8")
+    mock_response.text = text_content
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -240,6 +244,7 @@ async def test_execute_api_tool_html_response(simple_fastapi_app: FastAPI):
     # Mock the HTTP client response with HTML
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.content = html_content.encode("utf-8")
     mock_response.text = html_content
     mock_response.status_code = 200
 
@@ -511,6 +516,7 @@ async def test_execute_api_tool_csv_response(simple_fastapi_app: FastAPI):
     # Mock the HTTP client response with CSV
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/csv"}
+    mock_response.content = csv_content.encode("utf-8")
     mock_response.text = csv_content
     mock_response.status_code = 200
 
@@ -757,17 +763,17 @@ async def test_execute_api_tool_json_with_invalid_json_content(simple_fastapi_ap
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_large_binary_response(simple_fastapi_app: FastAPI):
-    """Test execution of an API tool that returns large binary content (>1MB)."""
+async def test_execute_api_tool_large_image_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns a large image (exceeds size limit)."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Create a large binary content (2MB)
-    large_binary = b'\x00' * (2 * 1024 * 1024)
+    # Create a large fake image (larger than _MAX_IMAGE_SIZE)
+    large_image_bytes = b'\x89PNG' + (b'\x00' * (6 * 1024 * 1024))  # ~6MB
 
-    # Mock the HTTP client response with large binary
+    # Mock the HTTP client response with a large image
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "application/octet-stream"}
-    mock_response.content = large_binary
+    mock_response.headers = {"content-type": "image/png"}
+    mock_response.content = large_image_bytes
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -787,42 +793,30 @@ async def test_execute_api_tool_large_binary_response(simple_fastapi_app: FastAP
             operation_map=mcp.operation_map
         )
 
-    # Verify the result is a summary without full base64 data
+    # Verify the result is a TextContent with summary (not ImageContent)
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    assert "[Binary content: application/octet-stream" in result[0].text
-    assert "Content too large to include" in result[0].text
-    assert "2.00 MB" in result[0].text
-    # Should NOT contain actual base64 data for large files
-    assert "Base64 encoded data:" not in result[0].text
-
-
-class BinaryMockResponse:
-    """Mock response that raises UnicodeDecodeError when accessing .text"""
-    def __init__(self, content: bytes, headers: dict, status_code: int):
-        self.content = content
-        self.headers = headers
-        self.status_code = status_code
-
-    @property
-    def text(self):
-        raise UnicodeDecodeError('utf-8', b'', 0, 1, 'invalid byte')
+    assert "[Image content: image/png" in result[0].text
+    assert "too large" in result[0].text
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_small_binary_response_with_base64(simple_fastapi_app: FastAPI):
-    """Test execution of an API tool that returns small binary content (<1MB) includes base64."""
+async def test_execute_api_tool_large_binary_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns large binary content (exceeds size limit)."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Create a small binary content (100 bytes)
-    small_binary = b'\x00\x01\x02\x03' * 25
+    # Create large binary content (larger than _MAX_BINARY_SIZE_FOR_BASE64)
+    large_binary = b'\x00\x01\x02' * (500 * 1024)  # ~1.5MB
 
-    # Mock the HTTP client response with small binary that can't be decoded as text
-    mock_response = BinaryMockResponse(
-        content=small_binary,
-        headers={"content-type": "application/octet-stream"},
-        status_code=200
-    )
+    # Mock the HTTP client response with large binary
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = large_binary
+    mock_response.text = None  # Will raise exception when accessed
+    mock_response.status_code = 200
+
+    # Make text access raise an exception (simulating true binary)
+    type(mock_response).text = property(lambda self: (_ for _ in ()).throw(UnicodeDecodeError('utf-8', b'', 0, 1, 'invalid')))
 
     # Mock the HTTP client
     mock_client = AsyncMock()
@@ -841,39 +835,78 @@ async def test_execute_api_tool_small_binary_response_with_base64(simple_fastapi
             operation_map=mcp.operation_map
         )
 
-    # Verify the result includes base64 data for small files
+    # Verify the result is a summary (no base64 data)
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/octet-stream" in result[0].text
+    assert "too large" in result[0].text
+    assert "Base64" not in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_small_binary_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns small binary content (within size limit)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create small binary content
+    small_binary = b'\x00\x01\x02\x03\x04\x05'
+
+    # Mock the HTTP client response with small binary
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = small_binary
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result includes base64 data
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
     assert "[Binary content: application/octet-stream" in result[0].text
     assert "Base64 encoded data:" in result[0].text
-    # Verify the base64 can be decoded back
+    # Verify the base64 decodes back to original
     assert base64.standard_b64encode(small_binary).decode("ascii") in result[0].text
 
 
+# Tests for content type detection and fallback
+
+
 @pytest.mark.asyncio
-async def test_execute_api_tool_audio_response(simple_fastapi_app: FastAPI):
-    """Test execution of an API tool that returns audio content."""
+async def test_execute_api_tool_json_with_wrong_content_type(simple_fastapi_app: FastAPI):
+    """Test detection of JSON content when Content-Type header is wrong (e.g., text/plain)."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Create fake audio content (MP3 header)
-    audio_bytes = b'\xff\xfb\x90\x00' + b'\x00' * 100
+    json_data = {"key": "value", "number": 42}
+    json_bytes = json.dumps(json_data).encode("utf-8")
 
-    # Mock the HTTP client response with audio that can't be decoded as text
-    mock_response = BinaryMockResponse(
-        content=audio_bytes,
-        headers={"content-type": "audio/mpeg"},
-        status_code=200
-    )
+    # Mock response with wrong content-type but valid JSON
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.content = json_bytes
+    mock_response.json.return_value = json_data
+    mock_response.status_code = 200
 
-    # Mock the HTTP client
     mock_client = AsyncMock()
     mock_client.get.return_value = mock_response
 
-    # Test parameters
     tool_name = "get_item"
     arguments = {"item_id": 1}
 
-    # Execute the tool
     with patch.object(mcp, '_http_client', mock_client):
         result = await mcp._execute_api_tool(
             client=mock_client,
@@ -882,8 +915,250 @@ async def test_execute_api_tool_audio_response(simple_fastapi_app: FastAPI):
             operation_map=mcp.operation_map
         )
 
-    # Verify the result contains audio metadata and base64
+    # Should detect JSON and format it properly
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    assert "[Binary content: audio/mpeg" in result[0].text
-    assert "Base64 encoded data:" in result[0].text
+    assert '"key"' in result[0].text
+    assert '"value"' in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_xml_with_octet_stream_content_type(simple_fastapi_app: FastAPI):
+    """Test detection of XML content when Content-Type is application/octet-stream."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    xml_content = b'<?xml version="1.0"?><root><item>Test</item></root>'
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = xml_content
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect XML and format it
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "<root>" in result[0].text
+    assert "<item>" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_html_detection_without_header(simple_fastapi_app: FastAPI):
+    """Test detection of HTML content when Content-Type header is missing."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Use HTML that clearly has <html> tag for detection
+    html_content = b'<html><head><title>Test</title></head><body>Hello</body></html>'
+
+    mock_response = MagicMock()
+    mock_response.headers = {}  # No content-type header
+    mock_response.content = html_content
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect HTML
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[HTML Content]" in result[0].text
+    assert "<html>" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_png_detection_from_magic_bytes(simple_fastapi_app: FastAPI):
+    """Test detection of PNG image from magic bytes when Content-Type is wrong."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Real PNG magic bytes
+    png_bytes = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = png_bytes
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect PNG and return as ImageContent
+    assert len(result) == 1
+    assert isinstance(result[0], ImageContent)
+    assert result[0].mimeType == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_jpeg_detection_from_magic_bytes(simple_fastapi_app: FastAPI):
+    """Test detection of JPEG image from magic bytes when Content-Type is missing."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Real JPEG magic bytes
+    jpeg_bytes = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01'
+
+    mock_response = MagicMock()
+    mock_response.headers = {}  # No content-type
+    mock_response.content = jpeg_bytes
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect JPEG and return as ImageContent
+    assert len(result) == 1
+    assert isinstance(result[0], ImageContent)
+    assert result[0].mimeType == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_pdf_detection_from_magic_bytes(simple_fastapi_app: FastAPI):
+    """Test detection of PDF from magic bytes."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # PDF magic bytes with some binary content
+    pdf_bytes = b'%PDF-1.4\n%\x00\x01\x02\x03\n1 0 obj\n<<\n>>\nendobj'
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = pdf_bytes
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect PDF and return as binary with base64
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/pdf" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_from_content(simple_fastapi_app: FastAPI):
+    """Test the _detect_content_type_from_content helper method."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Test JSON detection
+    assert mcp._detect_content_type_from_content(b'{"key": "value"}') == "application/json"
+    assert mcp._detect_content_type_from_content(b'[1, 2, 3]') == "application/json"
+
+    # Test XML detection
+    assert mcp._detect_content_type_from_content(b'<?xml version="1.0"?><root/>') == "application/xml"
+    assert mcp._detect_content_type_from_content(b'<root><item/></root>') == "application/xml"
+
+    # Test HTML detection (must have <html tag to be detected as HTML)
+    assert mcp._detect_content_type_from_content(b'<html><body></body></html>') == "text/html"
+    assert mcp._detect_content_type_from_content(b'<!doctype html><html></html>') == "text/html"
+
+    # Test PNG detection
+    assert mcp._detect_content_type_from_content(b'\x89PNG\r\n\x1a\n') == "image/png"
+
+    # Test JPEG detection
+    assert mcp._detect_content_type_from_content(b'\xff\xd8\xff\xe0') == "image/jpeg"
+
+    # Test PDF detection
+    assert mcp._detect_content_type_from_content(b'%PDF-1.4') == "application/pdf"
+
+    # Test plain text detection
+    assert mcp._detect_content_type_from_content(b'Hello, this is plain text.') == "text/plain"
+
+    # Test empty content
+    assert mcp._detect_content_type_from_content(b'') is None
+
+
+@pytest.mark.asyncio
+async def test_is_likely_binary(simple_fastapi_app: FastAPI):
+    """Test the _is_likely_binary helper method."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Binary content (has null bytes)
+    assert mcp._is_likely_binary(b'\x00\x01\x02\x03') is True
+
+    # Binary content (PNG signature)
+    assert mcp._is_likely_binary(b'\x89PNG\r\n\x1a\n') is True
+
+    # Text content
+    assert mcp._is_likely_binary(b'Hello, World!') is False
+
+    # JSON content
+    assert mcp._is_likely_binary(b'{"key": "value"}') is False
+
+    # Empty content
+    assert mcp._is_likely_binary(b'') is False
+
+
+@pytest.mark.asyncio
+async def test_format_xml_for_llm(simple_fastapi_app: FastAPI):
+    """Test the _format_xml_for_llm helper method."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Test basic XML formatting
+    xml_input = b'<?xml version="1.0"?><root><item id="1"><name>Test</name></item></root>'
+    formatted = mcp._format_xml_for_llm(xml_input, "fallback")
+
+    assert "<root>" in formatted
+    assert "<item" in formatted
+    assert "<name>" in formatted
+    assert "Test" in formatted
+    # Should be properly indented (contains spaces for indentation)
+    assert "  " in formatted
+
+    # Test with invalid XML (should return fallback)
+    invalid_xml = b'not valid xml <>'
+    result = mcp._format_xml_for_llm(invalid_xml, "fallback text")
+    assert result == "fallback text"

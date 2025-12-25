@@ -201,10 +201,13 @@ async def test_execute_api_tool_plain_text_response(simple_fastapi_app: FastAPI)
     """Test execution of an API tool that returns plain text."""
     mcp = FastApiMCP(simple_fastapi_app)
 
+    text_content = "Hello, this is plain text response"
+
     # Mock the HTTP client response with plain text
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/plain; charset=utf-8"}
-    mock_response.text = "Hello, this is plain text response"
+    mock_response.content = text_content.encode("utf-8")
+    mock_response.text = text_content
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -240,6 +243,7 @@ async def test_execute_api_tool_html_response(simple_fastapi_app: FastAPI):
     # Mock the HTTP client response with HTML
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.content = html_content.encode("utf-8")
     mock_response.text = html_content
     mock_response.status_code = 200
 
@@ -301,7 +305,8 @@ async def test_execute_api_tool_xml_response(simple_fastapi_app: FastAPI):
     # Verify the result
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    # The XML should be formatted (pretty-printed)
+    # The XML should be formatted (pretty-printed) with prefix
+    assert "[XML Content]" in result[0].text
     assert "<root>" in result[0].text
     assert "<item" in result[0].text
     assert "<name>" in result[0].text
@@ -511,6 +516,7 @@ async def test_execute_api_tool_csv_response(simple_fastapi_app: FastAPI):
     # Mock the HTTP client response with CSV
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "text/csv"}
+    mock_response.content = csv_content.encode("utf-8")
     mock_response.text = csv_content
     mock_response.status_code = 200
 
@@ -602,9 +608,10 @@ async def test_execute_api_tool_xml_with_custom_media_type(simple_fastapi_app: F
             operation_map=mcp.operation_map
         )
 
-    # Verify the result is formatted XML
+    # Verify the result is formatted XML with prefix
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
+    assert "[XML Content]" in result[0].text
     assert "<feed" in result[0].text
     assert "<title>" in result[0].text
 
@@ -635,7 +642,7 @@ async def test_parse_content_type_none(simple_fastapi_app: FastAPI):
     mcp = FastApiMCP(simple_fastapi_app)
 
     media_type, charset = mcp._parse_content_type(None)
-    assert media_type == "application/octet-stream"
+    assert media_type == ""  # Returns empty string, detection happens later
     assert charset is None
 
 
@@ -878,3 +885,266 @@ async def test_execute_api_tool_small_binary_response(simple_fastapi_app: FastAP
     assert "Base64 encoded data:" in result[0].text
     # Verify the base64 decodes back to original
     assert base64.standard_b64encode(small_binary).decode("ascii") in result[0].text
+
+
+# Tests for content type detection from content
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_json_from_content(simple_fastapi_app: FastAPI):
+    """Test that JSON is detected from content even with wrong Content-Type header."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    json_content = b'{"name": "test", "value": 123}'
+
+    # Mock response with wrong content type but valid JSON content
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}  # Wrong header
+    mock_response.content = json_content
+    mock_response.json.return_value = {"name": "test", "value": 123}
+    mock_response.text = json_content.decode("utf-8")
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect JSON and format it properly
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert '"name"' in result[0].text
+    assert '"test"' in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_xml_from_content(simple_fastapi_app: FastAPI):
+    """Test that XML is detected from content even with wrong Content-Type header."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    xml_content = b'<?xml version="1.0"?><root><item>test</item></root>'
+
+    # Mock response with wrong content type but valid XML content
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}  # Wrong header
+    mock_response.content = xml_content
+    mock_response.text = xml_content.decode("utf-8")
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect XML and format it properly
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[XML Content]" in result[0].text
+    assert "<root>" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_image_from_magic_bytes(simple_fastapi_app: FastAPI):
+    """Test that image type is detected from magic bytes even with wrong Content-Type."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # PNG magic bytes
+    png_content = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+
+    # Mock response with wrong content type but valid PNG magic bytes
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}  # Generic binary
+    mock_response.content = png_content
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect PNG and return as ImageContent
+    assert len(result) == 1
+    assert isinstance(result[0], ImageContent)
+    assert result[0].mimeType == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_pdf_from_magic_bytes(simple_fastapi_app: FastAPI):
+    """Test that PDF is detected from magic bytes."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # PDF magic bytes
+    pdf_content = b'%PDF-1.4\n%\xc0\xc1\xc2\xc3'
+
+    # Mock response with generic content type
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = pdf_content
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect PDF and handle appropriately
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[PDF Document:" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_no_header(simple_fastapi_app: FastAPI):
+    """Test content type detection when no Content-Type header is present."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    json_content = b'{"status": "ok"}'
+
+    # Mock response without content type header
+    mock_response = MagicMock()
+    mock_response.headers = {}  # No content-type
+    mock_response.content = json_content
+    mock_response.json.return_value = {"status": "ok"}
+    mock_response.text = json_content.decode("utf-8")
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect JSON from content
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert '"status"' in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_html_from_content(simple_fastapi_app: FastAPI):
+    """Test that HTML is detected from content."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Use a clearer HTML format that won't be mistaken for XML
+    html_content = b'<!DOCTYPE html>\n<html><body>Hello</body></html>'
+
+    # Mock response with wrong content type
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.content = html_content
+    mock_response.text = html_content.decode("utf-8")
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should detect HTML
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[HTML Content]" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_is_binary_content_detection(simple_fastapi_app: FastAPI):
+    """Test the _is_binary_content helper method."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Binary content with null bytes
+    assert mcp._is_binary_content(b'\x00\x01\x02\x03') is True
+
+    # Text content
+    assert mcp._is_binary_content(b'Hello, world!') is False
+
+    # Empty content
+    assert mcp._is_binary_content(b'') is False
+
+    # UTF-8 text with special characters
+    assert mcp._is_binary_content('Hello, 世界!'.encode('utf-8')) is False
+
+
+@pytest.mark.asyncio
+async def test_detect_content_type_from_content_method(simple_fastapi_app: FastAPI):
+    """Test the _detect_content_type_from_content helper method."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # PNG
+    assert mcp._detect_content_type_from_content(b'\x89PNG\r\n\x1a\n') == "image/png"
+
+    # JPEG
+    assert mcp._detect_content_type_from_content(b'\xff\xd8\xff\xe0') == "image/jpeg"
+
+    # GIF
+    assert mcp._detect_content_type_from_content(b'GIF89a') == "image/gif"
+
+    # PDF
+    assert mcp._detect_content_type_from_content(b'%PDF-1.4') == "application/pdf"
+
+    # JSON
+    assert mcp._detect_content_type_from_content(b'{"key": "value"}') == "application/json"
+
+    # XML
+    assert mcp._detect_content_type_from_content(b'<?xml version="1.0"?><root/>') == "application/xml"
+
+    # HTML (with newline to ensure proper detection)
+    assert mcp._detect_content_type_from_content(b'<!DOCTYPE html>\n<html>') == "text/html"
+
+    # Plain text
+    assert mcp._detect_content_type_from_content(b'Just some plain text') == "text/plain"
+
+    # Empty
+    assert mcp._detect_content_type_from_content(b'') is None

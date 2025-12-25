@@ -1251,3 +1251,737 @@ def test_nested_unresolved_refs_validation():
 
     assert not is_valid
     assert "#/components/schemas/DeepMissing" in unresolved
+
+
+# Complex edge case tests
+
+
+def test_deeply_nested_references_7_levels():
+    """Test handling of very deeply nested references (7 levels)."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Level1": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level2"}, "value": {"type": "string"}},
+                },
+                "Level2": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level3"}, "value": {"type": "string"}},
+                },
+                "Level3": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level4"}, "value": {"type": "string"}},
+                },
+                "Level4": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level5"}, "value": {"type": "string"}},
+                },
+                "Level5": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level6"}, "value": {"type": "string"}},
+                },
+                "Level6": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/Level7"}, "value": {"type": "string"}},
+                },
+                "Level7": {
+                    "type": "object",
+                    "properties": {"final": {"type": "boolean"}},
+                },
+            }
+        },
+        "paths": {
+            "/deep": {
+                "get": {
+                    "operationId": "get_deep",
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/Level1"}}
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # Should resolve without issues
+    assert result.is_fully_resolved
+    assert len(result.circular_refs) == 0
+
+    # Verify the chain is fully resolved
+    level1 = result.schema["paths"]["/deep"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert level1.get("type") == "object"
+    assert "next" in level1["properties"]
+
+    # Traverse down the chain
+    current = level1
+    for i in range(6):  # 6 more levels
+        assert "next" in current["properties"], f"Missing 'next' at level {i+1}"
+        current = current["properties"]["next"]
+        assert current.get("type") == "object", f"Type not resolved at level {i+2}"
+
+    # Final level should have 'final' property
+    assert "final" in current["properties"]
+    assert current["properties"]["final"].get("type") == "boolean"
+
+
+def test_references_in_nested_array_items():
+    """Test references deeply nested within array items."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Tag": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "color": {"type": "string"}},
+                },
+                "Item": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}},
+                    },
+                },
+                "Container": {
+                    "type": "object",
+                    "properties": {
+                        "items": {"type": "array", "items": {"$ref": "#/components/schemas/Item"}},
+                        "metadata": {
+                            "type": "object",
+                            "properties": {
+                                "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}}
+                            },
+                        },
+                    },
+                },
+            }
+        },
+        "paths": {
+            "/containers": {
+                "get": {
+                    "operationId": "list_containers",
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {"$ref": "#/components/schemas/Container"},
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    assert result.is_fully_resolved
+    assert len(result.circular_refs) == 0
+
+    # Verify nested array items are resolved
+    response_schema = result.schema["paths"]["/containers"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    assert response_schema.get("type") == "array"
+
+    container = response_schema["items"]
+    assert container.get("type") == "object"
+
+    # Check items array
+    items_array = container["properties"]["items"]
+    assert items_array.get("type") == "array"
+    item = items_array["items"]
+    assert item.get("type") == "object"
+
+    # Check tags inside item
+    tags_in_item = item["properties"]["tags"]
+    assert tags_in_item.get("type") == "array"
+    tag = tags_in_item["items"]
+    assert tag.get("type") == "object"
+    assert "name" in tag["properties"]
+    assert "color" in tag["properties"]
+
+
+def test_allof_with_multiple_refs():
+    """Test allOf construct with multiple references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Identifiable": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string", "format": "uuid"}},
+                    "required": ["id"],
+                },
+                "Timestamped": {
+                    "type": "object",
+                    "properties": {
+                        "created_at": {"type": "string", "format": "date-time"},
+                        "updated_at": {"type": "string", "format": "date-time"},
+                    },
+                },
+                "Named": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "description": {"type": "string"}},
+                },
+                "Resource": {
+                    "allOf": [
+                        {"$ref": "#/components/schemas/Identifiable"},
+                        {"$ref": "#/components/schemas/Timestamped"},
+                        {"$ref": "#/components/schemas/Named"},
+                        {"type": "object", "properties": {"status": {"type": "string", "enum": ["active", "inactive"]}}},
+                    ]
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    resource = result["components"]["schemas"]["Resource"]
+    assert "allOf" in resource
+    assert len(resource["allOf"]) == 4
+
+    # Check each allOf item is resolved
+    assert resource["allOf"][0].get("type") == "object"
+    assert "id" in resource["allOf"][0]["properties"]
+
+    assert resource["allOf"][1].get("type") == "object"
+    assert "created_at" in resource["allOf"][1]["properties"]
+
+    assert resource["allOf"][2].get("type") == "object"
+    assert "name" in resource["allOf"][2]["properties"]
+
+    assert resource["allOf"][3].get("type") == "object"
+    assert "status" in resource["allOf"][3]["properties"]
+
+
+def test_oneof_with_refs():
+    """Test oneOf construct with references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Cat": {
+                    "type": "object",
+                    "properties": {"meow_volume": {"type": "integer"}, "name": {"type": "string"}},
+                },
+                "Dog": {
+                    "type": "object",
+                    "properties": {"bark_volume": {"type": "integer"}, "name": {"type": "string"}},
+                },
+                "Pet": {"oneOf": [{"$ref": "#/components/schemas/Cat"}, {"$ref": "#/components/schemas/Dog"}]},
+            }
+        },
+        "paths": {
+            "/pets": {
+                "post": {
+                    "operationId": "create_pet",
+                    "requestBody": {
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pet"}}}
+                    },
+                    "responses": {"201": {"description": "Created"}},
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    pet = result["components"]["schemas"]["Pet"]
+    assert "oneOf" in pet
+    assert len(pet["oneOf"]) == 2
+
+    # Check Cat is resolved
+    assert pet["oneOf"][0].get("type") == "object"
+    assert "meow_volume" in pet["oneOf"][0]["properties"]
+
+    # Check Dog is resolved
+    assert pet["oneOf"][1].get("type") == "object"
+    assert "bark_volume" in pet["oneOf"][1]["properties"]
+
+
+def test_anyof_with_refs():
+    """Test anyOf construct with references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "StringId": {"type": "object", "properties": {"id": {"type": "string"}}},
+                "IntegerId": {"type": "object", "properties": {"id": {"type": "integer"}}},
+                "FlexibleId": {
+                    "anyOf": [{"$ref": "#/components/schemas/StringId"}, {"$ref": "#/components/schemas/IntegerId"}]
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    flexible = result["components"]["schemas"]["FlexibleId"]
+    assert "anyOf" in flexible
+    assert len(flexible["anyOf"]) == 2
+
+    # Both should be resolved
+    assert flexible["anyOf"][0].get("type") == "object"
+    assert flexible["anyOf"][0]["properties"]["id"].get("type") == "string"
+
+    assert flexible["anyOf"][1].get("type") == "object"
+    assert flexible["anyOf"][1]["properties"]["id"].get("type") == "integer"
+
+
+def test_nested_composition_refs():
+    """Test deeply nested composition (allOf within oneOf within allOf)."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Base": {"type": "object", "properties": {"base_prop": {"type": "string"}}},
+                "ExtA": {"type": "object", "properties": {"ext_a": {"type": "string"}}},
+                "ExtB": {"type": "object", "properties": {"ext_b": {"type": "string"}}},
+                "Variant1": {"allOf": [{"$ref": "#/components/schemas/Base"}, {"$ref": "#/components/schemas/ExtA"}]},
+                "Variant2": {"allOf": [{"$ref": "#/components/schemas/Base"}, {"$ref": "#/components/schemas/ExtB"}]},
+                "Complex": {
+                    "allOf": [
+                        {
+                            "oneOf": [
+                                {"$ref": "#/components/schemas/Variant1"},
+                                {"$ref": "#/components/schemas/Variant2"},
+                            ]
+                        },
+                        {"type": "object", "properties": {"extra": {"type": "boolean"}}},
+                    ]
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    complex_schema = result["components"]["schemas"]["Complex"]
+    assert "allOf" in complex_schema
+    assert len(complex_schema["allOf"]) == 2
+
+    # Check oneOf within allOf
+    one_of_part = complex_schema["allOf"][0]
+    assert "oneOf" in one_of_part
+    assert len(one_of_part["oneOf"]) == 2
+
+    # Check Variant1 is resolved (allOf)
+    variant1 = one_of_part["oneOf"][0]
+    assert "allOf" in variant1
+    assert variant1["allOf"][0].get("type") == "object"
+    assert "base_prop" in variant1["allOf"][0]["properties"]
+
+
+def test_mixed_local_and_external_refs():
+    """Test schema with both local and external references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "LocalModel": {"type": "object", "properties": {"local": {"type": "string"}}},
+            }
+        },
+        "paths": {
+            "/mixed": {
+                "get": {
+                    "operationId": "get_mixed",
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "local_data": {"$ref": "#/components/schemas/LocalModel"},
+                                            "external_data": {"$ref": "https://example.com/schemas/External.json"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # Local ref should be resolved
+    response = result.schema["paths"]["/mixed"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    local_data = response["properties"]["local_data"]
+    assert local_data.get("type") == "object"
+    assert "local" in local_data["properties"]
+
+    # External ref should remain unresolved
+    external_data = response["properties"]["external_data"]
+    assert "$ref" in external_data
+    assert external_data["$ref"] == "https://example.com/schemas/External.json"
+
+    # Should have unresolved refs
+    assert result.has_unresolved_refs
+    assert "https://example.com/schemas/External.json" in result.unresolved_refs
+
+
+def test_parameter_refs():
+    """Test references to parameters component."""
+    schema = {
+        "components": {
+            "parameters": {
+                "PageParam": {
+                    "name": "page",
+                    "in": "query",
+                    "schema": {"type": "integer", "minimum": 1},
+                    "description": "Page number",
+                },
+                "SizeParam": {
+                    "name": "size",
+                    "in": "query",
+                    "schema": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "description": "Page size",
+                },
+            }
+        },
+        "paths": {
+            "/items": {
+                "get": {
+                    "operationId": "list_items",
+                    "parameters": [
+                        {"$ref": "#/components/parameters/PageParam"},
+                        {"$ref": "#/components/parameters/SizeParam"},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    params = result["paths"]["/items"]["get"]["parameters"]
+    assert len(params) == 2
+
+    # Check params are resolved
+    assert params[0].get("name") == "page"
+    assert params[0].get("in") == "query"
+    assert params[0]["schema"].get("type") == "integer"
+
+    assert params[1].get("name") == "size"
+    assert params[1].get("in") == "query"
+
+
+def test_mcp_tool_generation_with_complex_refs():
+    """Test that MCP tools are correctly generated from schemas with complex references."""
+    schema = {
+        "openapi": "3.1.0",
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "components": {
+            "schemas": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "street": {"type": "string"},
+                        "city": {"type": "string"},
+                        "country": {"type": "string"},
+                    },
+                    "required": ["street", "city"],
+                },
+                "Person": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Person's full name"},
+                        "email": {"type": "string", "format": "email"},
+                        "address": {"$ref": "#/components/schemas/Address"},
+                    },
+                    "required": ["name", "email"],
+                },
+            }
+        },
+        "paths": {
+            "/persons": {
+                "post": {
+                    "operationId": "create_person",
+                    "summary": "Create a new person",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Person"}}},
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "Person created",
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Person"}}},
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    tools, operation_map = convert_openapi_to_mcp_tools(schema)
+
+    assert len(tools) == 1
+    tool = tools[0]
+
+    assert tool.name == "create_person"
+    assert "Create a new person" in tool.description
+
+    # Check input schema has resolved properties
+    input_schema = tool.inputSchema
+    assert "properties" in input_schema
+
+    # Person properties should be in the input schema
+    props = input_schema["properties"]
+    assert "name" in props
+    assert "email" in props
+    assert "address" in props
+
+    # Address should be resolved
+    address_prop = props["address"]
+    assert address_prop.get("type") == "object"
+    assert "properties" in address_prop
+    assert "street" in address_prop["properties"]
+    assert "city" in address_prop["properties"]
+
+
+def test_mcp_tool_with_array_of_refs():
+    """Test MCP tool generation with array items containing references."""
+    schema = {
+        "openapi": "3.1.0",
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "components": {
+            "schemas": {
+                "OrderItem": {
+                    "type": "object",
+                    "properties": {
+                        "product_id": {"type": "string"},
+                        "quantity": {"type": "integer", "minimum": 1},
+                        "price": {"type": "number"},
+                    },
+                    "required": ["product_id", "quantity"],
+                }
+            }
+        },
+        "paths": {
+            "/orders": {
+                "post": {
+                    "operationId": "create_order",
+                    "summary": "Create order",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "customer_id": {"type": "string"},
+                                        "items": {
+                                            "type": "array",
+                                            "items": {"$ref": "#/components/schemas/OrderItem"},
+                                        },
+                                    },
+                                    "required": ["customer_id", "items"],
+                                }
+                            }
+                        },
+                    },
+                    "responses": {"201": {"description": "Created"}},
+                }
+            }
+        },
+    }
+
+    tools, operation_map = convert_openapi_to_mcp_tools(schema)
+
+    assert len(tools) == 1
+    tool = tools[0]
+
+    props = tool.inputSchema["properties"]
+    assert "customer_id" in props
+    assert "items" in props
+
+    # Check items array is properly resolved
+    items_prop = props["items"]
+    assert items_prop.get("type") == "array"
+    assert "items" in items_prop
+
+    item_schema = items_prop["items"]
+    assert item_schema.get("type") == "object"
+    assert "product_id" in item_schema["properties"]
+    assert "quantity" in item_schema["properties"]
+
+
+def test_info_preservation_during_resolution():
+    """Test that schema information is not lost during resolution."""
+    schema = {
+        "components": {
+            "schemas": {
+                "DetailedModel": {
+                    "type": "object",
+                    "title": "Detailed Model",
+                    "description": "A model with lots of details",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Unique identifier", "minimum": 1},
+                        "name": {
+                            "type": "string",
+                            "description": "Display name",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "pattern": "^[a-zA-Z]+$",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "uniqueItems": True,
+                            "minItems": 1,
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                    },
+                    "required": ["id", "name"],
+                    "additionalProperties": False,
+                    "example": {"id": 1, "name": "Example", "tags": ["tag1"]},
+                }
+            }
+        },
+        "paths": {
+            "/models": {
+                "get": {
+                    "operationId": "get_model",
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/DetailedModel"}}
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    model = result["paths"]["/models"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    # Check all details are preserved
+    assert model.get("type") == "object"
+    assert model.get("title") == "Detailed Model"
+    assert model.get("description") == "A model with lots of details"
+    assert model.get("required") == ["id", "name"]
+    assert model.get("additionalProperties") is False
+    assert model.get("example") == {"id": 1, "name": "Example", "tags": ["tag1"]}
+
+    # Check property details
+    id_prop = model["properties"]["id"]
+    assert id_prop.get("description") == "Unique identifier"
+    assert id_prop.get("minimum") == 1
+
+    name_prop = model["properties"]["name"]
+    assert name_prop.get("minLength") == 1
+    assert name_prop.get("maxLength") == 100
+    assert name_prop.get("pattern") == "^[a-zA-Z]+$"
+
+    tags_prop = model["properties"]["tags"]
+    assert tags_prop.get("uniqueItems") is True
+    assert tags_prop.get("minItems") == 1
+
+
+def test_discriminator_preservation():
+    """Test that discriminator information is preserved."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Pet": {
+                    "type": "object",
+                    "discriminator": {"propertyName": "petType", "mapping": {"cat": "#/components/schemas/Cat"}},
+                    "properties": {"petType": {"type": "string"}},
+                    "required": ["petType"],
+                },
+                "Cat": {
+                    "allOf": [
+                        {"$ref": "#/components/schemas/Pet"},
+                        {"type": "object", "properties": {"meow": {"type": "boolean"}}},
+                    ]
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    pet = result["components"]["schemas"]["Pet"]
+    assert "discriminator" in pet
+    assert pet["discriminator"]["propertyName"] == "petType"
+
+
+def test_multiple_circular_chains():
+    """Test handling of multiple independent circular reference chains."""
+    schema = {
+        "components": {
+            "schemas": {
+                # Chain 1: A -> B -> A
+                "ChainA1": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/ChainA2"}},
+                },
+                "ChainA2": {
+                    "type": "object",
+                    "properties": {"back": {"$ref": "#/components/schemas/ChainA1"}},
+                },
+                # Chain 2: X -> Y -> Z -> X
+                "ChainB1": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/ChainB2"}},
+                },
+                "ChainB2": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/ChainB3"}},
+                },
+                "ChainB3": {
+                    "type": "object",
+                    "properties": {"back": {"$ref": "#/components/schemas/ChainB1"}},
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # Should detect multiple circular refs
+    assert len(result.circular_refs) >= 2
+
+    # Analysis should also detect them
+    analysis = analyze_schema_references(schema)
+    assert len(analysis.circular_refs) >= 2
+
+
+def test_ref_inside_additional_properties():
+    """Test references inside additionalProperties."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Value": {"type": "object", "properties": {"data": {"type": "string"}}},
+                "Map": {
+                    "type": "object",
+                    "additionalProperties": {"$ref": "#/components/schemas/Value"},
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    map_schema = result["components"]["schemas"]["Map"]
+    assert map_schema.get("type") == "object"
+    assert "additionalProperties" in map_schema
+
+    additional = map_schema["additionalProperties"]
+    assert additional.get("type") == "object"
+    assert "data" in additional["properties"]

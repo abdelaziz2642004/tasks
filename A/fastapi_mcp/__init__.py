@@ -15,9 +15,11 @@ except Exception:  # pragma: no cover
 from .server import FastApiMCP
 from .types import AuthConfig, OAuthMetadata
 from .openapi.utils import (
+    ReferenceResolutionContext,
     ReferenceResolutionResult,
-    detect_problematic_references,
-    resolve_schema_references_with_diagnostics,
+    SchemaAnalysisResult,
+    resolve_schema_references_with_details,
+    analyze_schema_references,
 )
 
 
@@ -25,7 +27,9 @@ __all__ = [
     "FastApiMCP",
     "AuthConfig",
     "OAuthMetadata",
+    "ReferenceResolutionContext",
     "ReferenceResolutionResult",
-    "detect_problematic_references",
-    "resolve_schema_references_with_diagnostics",
+    "SchemaAnalysisResult",
+    "resolve_schema_references_with_details",
+    "analyze_schema_references",
 ]

@@ -937,3 +937,132 @@ def test_array_of_refs():
     assert response_schema.get("type") == "array"
     assert response_schema["items"].get("type") == "object"
     assert "name" in response_schema["items"].get("properties", {})
+
+
+def test_cache_efficiency():
+    """Test that caching reduces redundant work."""
+    # Schema with many references to the same model
+    schema = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                }
+            }
+        },
+        "paths": {
+            f"/endpoint{i}": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/User"}}
+                            }
+                        }
+                    }
+                }
+            }
+            for i in range(10)
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # Should have 10 references resolved
+    assert result.reference_count == 10
+    # Should have 9 cache hits (first one misses, rest hit cache)
+    assert result.cache_hits == 9
+    # All schemas should be resolved correctly
+    for i in range(10):
+        response_schema = result.schema["paths"][f"/endpoint{i}"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+        assert response_schema.get("type") == "object"
+        assert "id" in response_schema.get("properties", {})
+
+
+def test_no_unnecessary_copies():
+    """Test that schemas without refs are not copied."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Simple": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                }
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "description": "Success",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"type": "string"}  # No refs here
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # No references should be resolved
+    assert result.reference_count == 0
+    assert result.cache_hits == 0
+    # Schema without refs should be returned as-is (same object)
+    assert result.schema["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "type": "string"
+    }
+
+
+def test_circular_reference_logging(caplog):
+    """Test that circular references are logged with full path."""
+    import logging
+
+    schema = {
+        "components": {
+            "schemas": {
+                "A": {
+                    "type": "object",
+                    "properties": {
+                        "b": {"$ref": "#/components/schemas/B"},
+                    },
+                },
+                "B": {
+                    "type": "object",
+                    "properties": {
+                        "c": {"$ref": "#/components/schemas/C"},
+                    },
+                },
+                "C": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"$ref": "#/components/schemas/A"},
+                    },
+                },
+            }
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        result = resolve_schema_references_with_details(schema, schema)
+
+    # Should detect circular reference
+    assert len(result.circular_refs) > 0
+
+    # Check that warning was logged
+    assert any("Circular reference detected" in record.message for record in caplog.records)
+    assert any("Reference cycle:" in record.message for record in caplog.records)

@@ -1,0 +1,15 @@
+# Large files
+A/claude-hfi
+B/claude-hfi
+*.bin
+*.model
+*.pt
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

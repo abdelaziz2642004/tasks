@@ -1148,3 +1148,415 @@ async def test_detect_content_type_from_content_method(simple_fastapi_app: FastA
 
     # Empty
     assert mcp._detect_content_type_from_content(b'') is None
+
+
+# Tests for error response handling with various content types
+
+
+@pytest.mark.asyncio
+async def test_error_response_json_with_detail(simple_fastapi_app: FastAPI):
+    """Test error handling for JSON response with 'detail' field (FastAPI style)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    error_data = {"detail": "Item not found"}
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b'{"detail": "Item not found"}'
+    mock_response.json.return_value = error_data
+    mock_response.status_code = 404
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 999}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "404" in str(exc_info.value)
+    assert "Item not found" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_json_validation_errors(simple_fastapi_app: FastAPI):
+    """Test error handling for JSON validation errors (Pydantic style)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    error_data = {
+        "detail": [
+            {"loc": ["body", "name"], "msg": "field required", "type": "value_error.missing"},
+            {"loc": ["body", "price"], "msg": "value is not a valid float", "type": "type_error.float"}
+        ]
+    }
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b'{"detail": [...]}'
+    mock_response.json.return_value = error_data
+    mock_response.status_code = 422
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+
+    tool_name = "create_item"
+    arguments = {}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "422" in str(exc_info.value)
+    assert "body.name" in str(exc_info.value)
+    assert "field required" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_json_rfc7807_problem_details(simple_fastapi_app: FastAPI):
+    """Test error handling for RFC 7807 Problem Details format."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # RFC 7807 format without "detail" field to test title extraction
+    error_data = {
+        "type": "https://example.com/probs/out-of-credit",
+        "title": "You do not have enough credit",
+        "instance": "/account/12345/msgs/abc"
+    }
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/problem+json"}
+    mock_response.content = b'{...}'
+    mock_response.json.return_value = error_data
+    mock_response.status_code = 403
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "403" in str(exc_info.value)
+    assert "You do not have enough credit" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_html_with_title(simple_fastapi_app: FastAPI):
+    """Test error handling for HTML error pages with title."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    html_error = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>500 Internal Server Error</title></head>
+    <body>
+        <h1>Internal Server Error</h1>
+        <p>Something went wrong on our end.</p>
+    </body>
+    </html>
+    """
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.content = html_error.encode("utf-8")
+    mock_response.text = html_error
+    mock_response.status_code = 500
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "500" in str(exc_info.value)
+    # Should extract title and/or h1
+    error_msg = str(exc_info.value)
+    assert "Internal Server Error" in error_msg or "500" in error_msg
+
+
+@pytest.mark.asyncio
+async def test_error_response_xml(simple_fastapi_app: FastAPI):
+    """Test error handling for XML error responses."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    xml_error = """<?xml version="1.0"?>
+    <error>
+        <code>NOT_FOUND</code>
+        <message>The requested resource was not found</message>
+    </error>
+    """
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/xml"}
+    mock_response.content = xml_error.encode("utf-8")
+    mock_response.text = xml_error
+    mock_response.status_code = 404
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 999}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "404" in str(exc_info.value)
+    assert "The requested resource was not found" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_plain_text(simple_fastapi_app: FastAPI):
+    """Test error handling for plain text error responses."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    text_error = "Error: Authentication required. Please provide valid credentials."
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.content = text_error.encode("utf-8")
+    mock_response.text = text_error
+    mock_response.status_code = 401
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "401" in str(exc_info.value)
+    assert "Authentication required" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_empty_body(simple_fastapi_app: FastAPI):
+    """Test error handling for responses with empty body."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b""
+    mock_response.status_code = 500
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "500" in str(exc_info.value)
+    assert "Empty response" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_binary_content(simple_fastapi_app: FastAPI):
+    """Test error handling for binary error responses (rare but possible)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Some binary content that can't be decoded as text
+    binary_content = b'\x00\x01\x02\x03\x04\x05\xff\xfe\xfd'
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = binary_content
+    mock_response.status_code = 500
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "500" in str(exc_info.value)
+    # Should indicate binary content
+    assert "Binary" in str(exc_info.value) or "bytes" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_json_with_error_field(simple_fastapi_app: FastAPI):
+    """Test error handling for JSON with 'error' field."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    error_data = {"error": "Invalid API key provided"}
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b'{"error": "Invalid API key provided"}'
+    mock_response.json.return_value = error_data
+    mock_response.status_code = 401
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "401" in str(exc_info.value)
+    assert "Invalid API key provided" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_error_response_json_with_message_field(simple_fastapi_app: FastAPI):
+    """Test error handling for JSON with 'message' field."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    error_data = {"message": "Rate limit exceeded", "retry_after": 60}
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b'{"message": "Rate limit exceeded", "retry_after": 60}'
+    mock_response.json.return_value = error_data
+    mock_response.status_code = 429
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "429" in str(exc_info.value)
+    assert "Rate limit exceeded" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_extract_error_message_method(simple_fastapi_app: FastAPI):
+    """Test the _extract_error_message helper method directly."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Test JSON with detail
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b'{"detail": "Not found"}'
+    mock_response.json.return_value = {"detail": "Not found"}
+    assert mcp._extract_error_message(mock_response) == "Not found"
+
+    # Test empty response
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b""
+    assert mcp._extract_error_message(mock_response) == "[Empty response]"
+
+    # Test plain text
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/plain"}
+    mock_response.content = b"Error occurred"
+    mock_response.text = "Error occurred"
+    assert mcp._extract_error_message(mock_response) == "Error occurred"
+
+
+@pytest.mark.asyncio
+async def test_error_response_html_nginx_style(simple_fastapi_app: FastAPI):
+    """Test error handling for nginx-style HTML error pages."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    html_error = """<html>
+<head><title>502 Bad Gateway</title></head>
+<body>
+<center><h1>502 Bad Gateway</h1></center>
+<hr><center>nginx/1.18.0</center>
+</body>
+</html>"""
+
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/html"}
+    mock_response.content = html_error.encode("utf-8")
+    mock_response.text = html_error
+    mock_response.status_code = 502
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    with patch.object(mcp, '_http_client', mock_client):
+        with pytest.raises(Exception) as exc_info:
+            await mcp._execute_api_tool(
+                client=mock_client,
+                tool_name=tool_name,
+                arguments=arguments,
+                operation_map=mcp.operation_map
+            )
+
+    assert "502" in str(exc_info.value)
+    assert "Bad Gateway" in str(exc_info.value)

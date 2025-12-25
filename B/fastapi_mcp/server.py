@@ -648,6 +648,136 @@ class FastApiMCP:
     # Maximum size for images to return as ImageContent (5MB)
     _MAX_IMAGE_SIZE = 5 * 1024 * 1024
 
+    def _extract_error_message(self, response: httpx.Response) -> str:
+        """
+        Extract a meaningful error message from an HTTP error response.
+
+        Handles various content types to provide useful error information.
+
+        Args:
+            response: The httpx Response object with an error status code
+
+        Returns:
+            A human-readable error message string
+        """
+        content_type_header = response.headers.get("content-type", "")
+        media_type, _ = self._parse_content_type(content_type_header)
+
+        # Try to get response content
+        try:
+            content = response.content
+        except Exception:
+            return f"[Unable to read response content]"
+
+        if not content:
+            return "[Empty response]"
+
+        # Handle JSON error responses
+        if media_type in ("application/json", "application/problem+json") or media_type.endswith("+json"):
+            try:
+                error_data = response.json()
+                # Common error response formats
+                if isinstance(error_data, dict):
+                    # FastAPI/Pydantic validation errors
+                    if "detail" in error_data:
+                        detail = error_data["detail"]
+                        if isinstance(detail, list):
+                            # Pydantic validation errors
+                            messages = []
+                            for err in detail[:5]:  # Limit to first 5 errors
+                                if isinstance(err, dict):
+                                    loc = err.get("loc", [])
+                                    msg = err.get("msg", "")
+                                    messages.append(f"{'.'.join(str(l) for l in loc)}: {msg}")
+                                else:
+                                    messages.append(str(err))
+                            return "; ".join(messages)
+                        return str(detail)
+                    # RFC 7807 Problem Details
+                    if "title" in error_data:
+                        title = error_data.get("title", "Error")
+                        detail = error_data.get("detail", "")
+                        return f"{title}: {detail}" if detail else title
+                    # Generic error field
+                    if "error" in error_data:
+                        error = error_data["error"]
+                        if isinstance(error, dict):
+                            return error.get("message", str(error))
+                        return str(error)
+                    # message field
+                    if "message" in error_data:
+                        return str(error_data["message"])
+                # Return formatted JSON for other structures
+                return json.dumps(error_data, indent=2, ensure_ascii=False)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Handle HTML error pages - extract title or body text
+        if media_type in ("text/html", "application/xhtml+xml"):
+            try:
+                html_text = response.text
+                # Try to extract title
+                import re
+
+                title_match = re.search(r"<title[^>]*>([^<]+)</title>", html_text, re.IGNORECASE)
+                if title_match:
+                    title = title_match.group(1).strip()
+                    # Also try to find a heading or error message
+                    h1_match = re.search(r"<h1[^>]*>([^<]+)</h1>", html_text, re.IGNORECASE)
+                    if h1_match:
+                        h1_text = h1_match.group(1).strip()
+                        if h1_text != title:
+                            return f"{title} - {h1_text}"
+                    return title
+
+                # Try to extract first heading
+                h1_match = re.search(r"<h1[^>]*>([^<]+)</h1>", html_text, re.IGNORECASE)
+                if h1_match:
+                    return h1_match.group(1).strip()
+
+                # Fall back to first 200 chars of visible text (strip tags)
+                text_only = re.sub(r"<[^>]+>", " ", html_text)
+                text_only = re.sub(r"\s+", " ", text_only).strip()
+                if len(text_only) > 200:
+                    return text_only[:200] + "..."
+                return text_only if text_only else "[HTML error page]"
+            except Exception:
+                return "[HTML error page]"
+
+        # Handle XML error responses
+        if media_type in ("application/xml", "text/xml") or media_type.endswith("+xml"):
+            try:
+                xml_text = response.text
+                import re
+
+                # Try to find common error elements
+                error_match = re.search(r"<(?:error|message|detail)[^>]*>([^<]+)</", xml_text, re.IGNORECASE)
+                if error_match:
+                    return error_match.group(1).strip()
+                # Return truncated XML
+                if len(xml_text) > 300:
+                    return xml_text[:300] + "..."
+                return xml_text
+            except Exception:
+                return "[XML error response]"
+
+        # Handle plain text
+        if media_type.startswith("text/"):
+            try:
+                text = response.text
+                if len(text) > 500:
+                    return text[:500] + "..."
+                return text
+            except Exception:
+                pass
+
+        # For binary or unknown content types
+        detected_type = self._detect_content_type_from_content(content)
+        if detected_type:
+            return f"[{detected_type} error response, {len(content):,} bytes]"
+
+        return f"[Binary error response: {media_type or 'unknown type'}, {len(content):,} bytes]"
+
     def _format_response_for_llm(
         self,
         response: httpx.Response,
@@ -868,8 +998,9 @@ class FastApiMCP:
             # Check for HTTP errors before processing response
             # TODO: Use a raise_for_status() method on the response (it needs to also be implemented in the AsyncClientProtocol)
             if 400 <= response.status_code < 600:
+                error_message = self._extract_error_message(response)
                 raise Exception(
-                    f"Error calling {tool_name}. Status code: {response.status_code}. Response: {response.text}"
+                    f"Error calling {tool_name}. Status code: {response.status_code}. Response: {error_message}"
                 )
 
             # Format response based on content type for optimal LLM consumption

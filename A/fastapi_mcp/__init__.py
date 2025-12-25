@@ -18,8 +18,10 @@ from .openapi.utils import (
     ReferenceResolutionContext,
     ReferenceResolutionResult,
     SchemaAnalysisResult,
+    UnresolvedReferenceError,
     resolve_schema_references_with_details,
     analyze_schema_references,
+    validate_resolved_schema,
 )
 
 
@@ -30,6 +32,8 @@ __all__ = [
     "ReferenceResolutionContext",
     "ReferenceResolutionResult",
     "SchemaAnalysisResult",
+    "UnresolvedReferenceError",
     "resolve_schema_references_with_details",
     "analyze_schema_references",
+    "validate_resolved_schema",
 ]

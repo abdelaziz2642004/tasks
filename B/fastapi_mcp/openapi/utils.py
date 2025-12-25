@@ -1,7 +1,7 @@
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,13 @@ class ReferenceResolutionContext:
     resolution_stack: Set[str] = field(default_factory=set)
     # Cache of already resolved references (stores the resolved schema directly)
     resolved_cache: Dict[str, Any] = field(default_factory=dict)
-    # Track which cache entries need deep copy (those with nested refs that were resolved)
-    cache_needs_copy: Set[str] = field(default_factory=set)
+    # Cache for schemas that need deep copy (only when they have nested refs)
+    needs_deep_copy: Set[str] = field(default_factory=set)
     # Current resolution depth
     depth: int = 0
     # Total number of references resolved
     reference_count: int = 0
-    # Cache hits (for performance monitoring)
+    # Cache hits for performance monitoring
     cache_hits: int = 0
     # Detected circular references
     circular_refs: Set[str] = field(default_factory=set)
@@ -44,6 +44,44 @@ class ReferenceResolutionResult:
     warnings: List[str]
     reference_count: int
     cache_hits: int = 0
+    # Unresolved references found during validation
+    unresolved_refs: Set[str] = field(default_factory=set)
+
+    @property
+    def has_unresolved_refs(self) -> bool:
+        """Check if there are any unresolved references (excluding circular ones)."""
+        return len(self.unresolved_refs) > 0
+
+    @property
+    def is_fully_resolved(self) -> bool:
+        """Check if the schema is fully resolved with no issues."""
+        return not self.has_unresolved_refs and len(self.warnings) == 0
+
+
+class UnresolvedReferenceError(Exception):
+    """Raised when schema references could not be resolved."""
+
+    def __init__(self, unresolved_refs: Set[str], message: str = None):
+        self.unresolved_refs = unresolved_refs
+        if message is None:
+            refs_list = ", ".join(sorted(unresolved_refs))
+            message = f"Failed to resolve {len(unresolved_refs)} reference(s): {refs_list}"
+        super().__init__(message)
+
+
+# Schema metadata fields that should be preserved during resolution
+SCHEMA_METADATA_FIELDS = frozenset([
+    "title",
+    "description",
+    "examples",
+    "example",
+    "default",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "externalDocs",
+    "xml",
+])
 
 
 def get_single_param_type_from_schema(param_schema: Dict[str, Any]) -> str:
@@ -92,7 +130,7 @@ def _resolve_json_pointer(reference_schema: Dict[str, Any], ref_path: str) -> Op
 
 
 def _has_refs(schema_part: Any) -> bool:
-    """Check if a schema part contains any $ref."""
+    """Check if a schema part contains any $ref references."""
     if not isinstance(schema_part, dict):
         if isinstance(schema_part, list):
             return any(_has_refs(item) for item in schema_part)
@@ -101,11 +139,58 @@ def _has_refs(schema_part: Any) -> bool:
     if "$ref" in schema_part:
         return True
 
-    return any(_has_refs(value) for value in schema_part.values())
+    return any(_has_refs(v) for v in schema_part.values())
+
+
+def _find_unresolved_refs(
+    schema_part: Any,
+    unresolved: Set[str],
+    path: str = "",
+) -> None:
+    """
+    Find all unresolved $ref references in a schema.
+
+    Args:
+        schema_part: The schema part to check
+        unresolved: Set to collect unresolved reference paths
+        path: Current JSON path for error reporting
+    """
+    if not isinstance(schema_part, dict):
+        if isinstance(schema_part, list):
+            for i, item in enumerate(schema_part):
+                _find_unresolved_refs(item, unresolved, f"{path}[{i}]")
+        return
+
+    # Check for $ref that wasn't resolved (excluding marked circular refs)
+    if "$ref" in schema_part:
+        # If it has $ref but no _circular marker, it's unresolved
+        if not schema_part.get("_circular", False):
+            unresolved.add(schema_part["$ref"])
+
+    # Recursively check all values
+    for key, value in schema_part.items():
+        if key not in ("$ref", "_circular"):
+            _find_unresolved_refs(value, unresolved, f"{path}.{key}" if path else key)
+
+
+def validate_resolved_schema(schema: Dict[str, Any]) -> Tuple[bool, Set[str]]:
+    """
+    Validate that a schema has been fully resolved.
+
+    Args:
+        schema: The resolved schema to validate
+
+    Returns:
+        A tuple of (is_valid, unresolved_refs) where is_valid is True if all
+        references are resolved, and unresolved_refs contains any remaining $ref paths
+    """
+    unresolved: Set[str] = set()
+    _find_unresolved_refs(schema, unresolved)
+    return len(unresolved) == 0, unresolved
 
 
 def _shallow_copy_dict(d: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a shallow copy of a dictionary."""
+    """Create a shallow copy of a dict, only copying the top level."""
     return {k: v for k, v in d.items()}
 
 
@@ -113,16 +198,20 @@ def _resolve_schema_references_internal(
     schema_part: Any,
     reference_schema: Dict[str, Any],
     context: ReferenceResolutionContext,
-    in_place: bool = False,
 ) -> Any:
     """
     Internal recursive function to resolve schema references.
+
+    Optimized for memory efficiency:
+    - Uses shallow copies where possible
+    - Only deep copies when necessary (schemas with nested mutable structures)
+    - Caches resolved references to avoid redundant resolution
+    - Tracks cache hits for performance monitoring
 
     Args:
         schema_part: The part of the schema being processed
         reference_schema: The complete schema used to resolve references from
         context: The resolution context for tracking state
-        in_place: If True, modifies schema_part directly (used for cache optimization)
 
     Returns:
         The schema with references resolved
@@ -130,8 +219,8 @@ def _resolve_schema_references_internal(
     # Handle non-dict types
     if not isinstance(schema_part, dict):
         if isinstance(schema_part, list):
-            # Only create new list if there are refs to resolve
-            if _has_refs(schema_part):
+            # Only process list if it might contain refs
+            if any(isinstance(item, (dict, list)) for item in schema_part):
                 return [
                     _resolve_schema_references_internal(item, reference_schema, context)
                     for item in schema_part
@@ -163,37 +252,49 @@ def _resolve_schema_references_internal(
         # Check for circular reference
         if ref_path in context.resolution_stack:
             context.circular_refs.add(ref_path)
-            # Log circular reference with full path for debugging
-            cycle_path = " -> ".join(list(context.resolution_stack) + [ref_path])
-            logger.warning(
-                f"Circular reference detected: {ref_path}. "
-                f"Reference cycle: {cycle_path}. "
-                f"This may indicate a recursive data structure in your OpenAPI schema."
-            )
+            # Log circular reference with appropriate level based on first occurrence
+            if len(context.circular_refs) == 1 or ref_path not in context.circular_refs:
+                logger.warning(
+                    f"Circular reference detected in OpenAPI schema: {ref_path}. "
+                    "This may indicate a recursive data structure in your API models. "
+                    "The reference will be preserved but marked as circular."
+                )
+            else:
+                logger.debug(f"Circular reference encountered again: {ref_path}")
             # Return a placeholder for circular references
             return {"$ref": ref_path, "_circular": True}
 
-        # Check cache first
+        # Check cache first - optimized caching strategy
         if ref_path in context.resolved_cache:
             context.cache_hits += 1
             cached = context.resolved_cache[ref_path]
 
-            # Only deep copy if the cached result has nested structures that could be mutated
-            # or if there are additional properties to merge
-            has_additional_props = any(k != "$ref" for k in schema_part.keys())
-            if ref_path in context.cache_needs_copy or has_additional_props:
+            # Only deep copy if the cached schema has nested mutable structures
+            # that could be modified
+            if ref_path in context.needs_deep_copy:
                 result = copy.deepcopy(cached)
             else:
-                # Safe to return shallow copy for simple schemas
+                # Shallow copy is sufficient for simple schemas
                 result = _shallow_copy_dict(cached) if isinstance(cached, dict) else cached
 
-            # Merge additional properties from original schema (excluding $ref)
-            if has_additional_props and isinstance(result, dict):
+            # Merge any additional properties from the original schema (excluding $ref)
+            # Metadata fields from the reference site take priority (e.g., description override)
+            if isinstance(result, dict):
                 for key, value in schema_part.items():
                     if key != "$ref":
-                        result[key] = _resolve_schema_references_internal(
+                        resolved_value = _resolve_schema_references_internal(
                             value, reference_schema, context
                         )
+                        # For metadata fields, the reference site value takes priority
+                        # This allows overriding title/description at the reference site
+                        if key in SCHEMA_METADATA_FIELDS:
+                            result[key] = resolved_value
+                        elif key not in result:
+                            # For non-metadata, only add if not already present from resolved schema
+                            result[key] = resolved_value
+                        else:
+                            # Key exists in both - reference site overrides
+                            result[key] = resolved_value
 
             return result
 
@@ -205,38 +306,47 @@ def _resolve_schema_references_internal(
             context.depth += 1
 
             try:
-                # Check if resolved schema has refs (for cache optimization)
-                has_nested_refs = _has_refs(resolved)
-
                 # Recursively resolve any nested references in the resolved schema
                 resolved_copy = _resolve_schema_references_internal(
                     resolved, reference_schema, context
                 )
 
-                # Ensure we have a mutable copy for merging
+                # Determine if this schema needs deep copy when retrieved from cache
+                # Only mark for deep copy if it has nested objects/arrays that could be mutated
                 if isinstance(resolved_copy, dict):
-                    # Only copy if we got back the same object (no refs were resolved)
-                    if resolved_copy is resolved:
-                        resolved_copy = _shallow_copy_dict(resolved_copy)
+                    has_mutable_nested = any(
+                        isinstance(v, (dict, list))
+                        for v in resolved_copy.values()
+                    )
+                    if has_mutable_nested:
+                        context.needs_deep_copy.add(ref_path)
 
-                # Merge any additional properties from the original schema (excluding $ref)
-                has_additional_props = False
-                for key, value in schema_part.items():
-                    if key != "$ref":
-                        has_additional_props = True
-                        if isinstance(resolved_copy, dict):
-                            resolved_copy[key] = _resolve_schema_references_internal(
+                # Cache the resolved schema (store original, not a copy)
+                context.resolved_cache[ref_path] = resolved_copy
+
+                # Create result with merged additional properties
+                if isinstance(resolved_copy, dict):
+                    # Shallow copy for the result we return
+                    result = _shallow_copy_dict(resolved_copy)
+
+                    # Merge any additional properties from the original schema (excluding $ref)
+                    # Metadata fields from the reference site take priority
+                    for key, value in schema_part.items():
+                        if key != "$ref":
+                            resolved_value = _resolve_schema_references_internal(
                                 value, reference_schema, context
                             )
-
-                # Cache the result - only deep copy if it has nested refs
-                if has_nested_refs or has_additional_props:
-                    context.resolved_cache[ref_path] = copy.deepcopy(resolved_copy)
-                    context.cache_needs_copy.add(ref_path)
-                else:
-                    # For simple schemas without nested refs, store directly
-                    context.resolved_cache[ref_path] = resolved_copy
-
+                            # For metadata fields, the reference site value takes priority
+                            # This allows overriding title/description at the reference site
+                            if key in SCHEMA_METADATA_FIELDS:
+                                result[key] = resolved_value
+                            elif key not in result:
+                                # For non-metadata, only add if not already present
+                                result[key] = resolved_value
+                            else:
+                                # Key exists in both - reference site overrides
+                                result[key] = resolved_value
+                    return result
                 return resolved_copy
             finally:
                 # Remove from resolution stack
@@ -247,25 +357,25 @@ def _resolve_schema_references_internal(
             warning = f"Could not resolve reference: {ref_path}"
             if warning not in context.warnings:
                 context.warnings.append(warning)
-                logger.warning(warning)
+                logger.warning(
+                    f"Unresolved reference in OpenAPI schema: {ref_path}. "
+                    "This reference will be kept as-is but may cause issues during tool generation."
+                )
             return _shallow_copy_dict(schema_part)
 
-    # No $ref - check if we need to process nested refs
-    if not _has_refs(schema_part):
-        # No refs anywhere, return as-is (no copy needed)
-        return schema_part
-
-    # Has nested refs - create new dict with resolved values
-    result: Dict[str, Any] = {}
+    # No $ref - process all keys recursively
+    # Use shallow copy and only recurse into values that need processing
     context.depth += 1
     try:
+        result = {}
         for key, value in schema_part.items():
             if isinstance(value, dict):
                 result[key] = _resolve_schema_references_internal(
                     value, reference_schema, context
                 )
             elif isinstance(value, list):
-                if _has_refs(value):
+                # Only process list items that could contain refs
+                if any(isinstance(item, (dict, list)) for item in value):
                     result[key] = [
                         _resolve_schema_references_internal(item, reference_schema, context)
                         if isinstance(item, (dict, list))
@@ -308,22 +418,24 @@ def resolve_schema_references(
 
     # Log summary of resolution
     if context.circular_refs:
+        circular_list = ", ".join(sorted(context.circular_refs))
         logger.warning(
-            f"Schema resolution completed with {len(context.circular_refs)} circular reference(s): "
-            f"{', '.join(sorted(context.circular_refs))}. "
-            f"Circular references have been replaced with placeholder objects."
+            f"OpenAPI schema resolution completed with {len(context.circular_refs)} "
+            f"circular reference(s): {circular_list}. "
+            "These schemas reference themselves directly or indirectly. "
+            "Consider reviewing your API models for unintended recursion."
         )
 
     if context.warnings:
-        logger.info(f"Reference resolution completed with {len(context.warnings)} warning(s)")
-
-    # Log performance metrics at debug level
-    if context.reference_count > 0:
-        cache_hit_rate = (context.cache_hits / context.reference_count * 100) if context.reference_count else 0
+        logger.info(
+            f"Reference resolution completed with {len(context.warnings)} warning(s). "
+            f"Resolved {context.reference_count} references with {context.cache_hits} cache hits."
+        )
+    elif context.reference_count > 0:
         logger.debug(
-            f"Reference resolution stats: {context.reference_count} refs resolved, "
-            f"{context.cache_hits} cache hits ({cache_hit_rate:.1f}% hit rate), "
-            f"{len(context.resolved_cache)} unique schemas cached"
+            f"Reference resolution completed successfully. "
+            f"Resolved {context.reference_count} references with {context.cache_hits} cache hits "
+            f"({context.cache_hits * 100 // max(context.reference_count, 1)}% cache hit rate)."
         )
 
     return result if isinstance(result, dict) else schema_part
@@ -332,6 +444,7 @@ def resolve_schema_references(
 def resolve_schema_references_with_details(
     schema_part: Dict[str, Any],
     reference_schema: Dict[str, Any],
+    validate: bool = True,
 ) -> ReferenceResolutionResult:
     """
     Resolve schema references and return detailed information about the resolution.
@@ -341,28 +454,77 @@ def resolve_schema_references_with_details(
     Args:
         schema_part: The part of the schema being processed that may contain references
         reference_schema: The complete schema used to resolve references from
+        validate: Whether to validate that all references were resolved (default: True)
 
     Returns:
         A ReferenceResolutionResult containing the resolved schema and metadata
     """
     context = ReferenceResolutionContext()
     result = _resolve_schema_references_internal(schema_part, reference_schema, context)
+    resolved_schema = result if isinstance(result, dict) else schema_part
 
-    # Log circular references with detailed info
+    # Validate resolution if requested
+    unresolved_refs: Set[str] = set()
+    if validate:
+        _, unresolved_refs = validate_resolved_schema(resolved_schema)
+        if unresolved_refs:
+            refs_list = ", ".join(sorted(unresolved_refs))
+            logger.error(
+                f"Schema validation failed: {len(unresolved_refs)} unresolved reference(s) "
+                f"remain after resolution: {refs_list}. "
+                "This may indicate missing schema definitions or external references."
+            )
+
+    # Log circular references if any were found
     if context.circular_refs:
+        circular_list = ", ".join(sorted(context.circular_refs))
         logger.warning(
-            f"Schema resolution completed with {len(context.circular_refs)} circular reference(s): "
-            f"{', '.join(sorted(context.circular_refs))}. "
-            f"Circular references have been replaced with placeholder objects."
+            f"OpenAPI schema resolution completed with {len(context.circular_refs)} "
+            f"circular reference(s): {circular_list}. "
+            "These schemas reference themselves directly or indirectly."
         )
 
     return ReferenceResolutionResult(
-        schema=result if isinstance(result, dict) else schema_part,
+        schema=resolved_schema,
         circular_refs=context.circular_refs,
         warnings=context.warnings,
         reference_count=context.reference_count,
         cache_hits=context.cache_hits,
+        unresolved_refs=unresolved_refs,
     )
+
+
+def resolve_schema_references_strict(
+    schema_part: Dict[str, Any],
+    reference_schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Resolve schema references with strict validation.
+
+    This function is similar to resolve_schema_references but raises an error
+    if any references could not be resolved.
+
+    Args:
+        schema_part: The part of the schema being processed that may contain references
+        reference_schema: The complete schema used to resolve references from
+
+    Returns:
+        The schema with references resolved
+
+    Raises:
+        UnresolvedReferenceError: If any references could not be resolved
+    """
+    result = resolve_schema_references_with_details(schema_part, reference_schema, validate=True)
+
+    if result.has_unresolved_refs:
+        raise UnresolvedReferenceError(
+            result.unresolved_refs,
+            f"Schema resolution failed with {len(result.unresolved_refs)} unresolved reference(s). "
+            f"Unresolved: {', '.join(sorted(result.unresolved_refs))}. "
+            "Ensure all referenced schemas are defined in the OpenAPI specification."
+        )
+
+    return result.schema
 
 
 @dataclass

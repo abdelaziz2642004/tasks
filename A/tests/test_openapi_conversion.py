@@ -10,9 +10,12 @@ from fastapi_mcp.openapi.utils import (
     resolve_schema_references,
     resolve_schema_references_with_details,
     analyze_schema_references,
+    validate_resolved_schema,
     ReferenceResolutionResult,
     SchemaAnalysisResult,
+    UnresolvedReferenceError,
 )
+import pytest
 
 
 def test_simple_app_conversion(simple_fastapi_app: FastAPI):
@@ -941,3 +944,307 @@ def test_array_of_refs():
     assert response_schema.get("type") == "array"
     assert response_schema["items"].get("type") == "object"
     assert "name" in response_schema["items"].get("properties", {})
+
+
+def test_validate_resolved_schema_no_refs():
+    """Test validation passes when no unresolved refs."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "age": {"type": "integer"},
+        },
+    }
+
+    unresolved = validate_resolved_schema(schema)
+    assert len(unresolved) == 0
+
+
+def test_validate_resolved_schema_with_unresolved():
+    """Test validation detects unresolved refs."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "address": {"$ref": "#/components/schemas/Address"},
+        },
+    }
+
+    unresolved = validate_resolved_schema(schema)
+    assert "#/components/schemas/Address" in unresolved
+
+
+def test_validate_resolved_schema_raises_error():
+    """Test validation raises error when requested."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "data": {"$ref": "#/components/schemas/Missing"},
+        },
+    }
+
+    with pytest.raises(UnresolvedReferenceError) as exc_info:
+        validate_resolved_schema(schema, raise_on_unresolved=True)
+
+    assert "#/components/schemas/Missing" in exc_info.value.unresolved_refs
+
+
+def test_validate_allows_circular_refs():
+    """Test validation allows circular refs (marked with _circular)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "child": {"$ref": "#/components/schemas/Node", "_circular": True},
+        },
+    }
+
+    unresolved = validate_resolved_schema(schema)
+    assert len(unresolved) == 0
+
+
+def test_metadata_preservation_title():
+    """Test that title is preserved from reference level."""
+    schema = {
+        "components": {
+            "schemas": {
+                "BaseModel": {
+                    "type": "object",
+                    "title": "Base Model Title",
+                    "properties": {"id": {"type": "integer"}},
+                }
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BaseModel",
+                                        "title": "Custom Title Override",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+    response_schema = result["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    # Title from reference level should override base schema title
+    assert response_schema.get("title") == "Custom Title Override"
+
+
+def test_metadata_preservation_description():
+    """Test that description is preserved from reference level."""
+    schema = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "description": "Base user description",
+                    "properties": {"name": {"type": "string"}},
+                }
+            }
+        },
+        "paths": {
+            "/users": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/User",
+                                        "description": "User response for this endpoint",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+    response_schema = result["paths"]["/users"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema.get("description") == "User response for this endpoint"
+    assert response_schema.get("type") == "object"
+    assert "name" in response_schema.get("properties", {})
+
+
+def test_metadata_preservation_examples():
+    """Test that examples are preserved from reference level."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Item": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                }
+            }
+        },
+        "paths": {
+            "/items": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/Item",
+                                        "examples": [{"id": 1, "name": "Example Item"}],
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+    response_schema = result["paths"]["/items"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema.get("examples") == [{"id": 1, "name": "Example Item"}]
+
+
+def test_metadata_preservation_default():
+    """Test that default value is preserved from reference level."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Status": {
+                    "type": "string",
+                    "enum": ["active", "inactive", "pending"],
+                }
+            }
+        },
+        "paths": {
+            "/status": {
+                "get": {
+                    "parameters": [
+                        {
+                            "name": "status",
+                            "in": "query",
+                            "schema": {
+                                "$ref": "#/components/schemas/Status",
+                                "default": "active",
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+    param_schema = result["paths"]["/status"]["get"]["parameters"][0]["schema"]
+
+    assert param_schema.get("default") == "active"
+    assert param_schema.get("type") == "string"
+
+
+def test_resolution_result_includes_unresolved_refs():
+    """Test that resolution result includes unresolved refs from validation."""
+    schema = {
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Missing"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result = resolve_schema_references_with_details(schema, schema, validate=True)
+
+    assert "#/components/schemas/Missing" in result.unresolved_refs
+    assert len(result.warnings) > 0
+
+
+def test_multiple_metadata_fields_preserved():
+    """Test multiple metadata fields are all preserved."""
+    schema = {
+        "components": {
+            "schemas": {
+                "BaseSchema": {
+                    "type": "object",
+                    "title": "Original Title",
+                    "description": "Original description",
+                    "properties": {"value": {"type": "string"}},
+                }
+            }
+        },
+        "test": {
+            "$ref": "#/components/schemas/BaseSchema",
+            "title": "Override Title",
+            "description": "Override description",
+            "deprecated": True,
+            "example": {"value": "test"},
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    assert result["test"]["title"] == "Override Title"
+    assert result["test"]["description"] == "Override description"
+    assert result["test"]["deprecated"] is True
+    assert result["test"]["example"] == {"value": "test"}
+    assert result["test"]["type"] == "object"
+
+
+def test_nested_ref_with_metadata():
+    """Test metadata preservation in nested references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "street": {"type": "string"},
+                        "city": {"type": "string"},
+                    },
+                },
+                "Person": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "address": {
+                            "$ref": "#/components/schemas/Address",
+                            "description": "Person's home address",
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    person = result["components"]["schemas"]["Person"]
+    address_prop = person["properties"]["address"]
+
+    assert address_prop.get("description") == "Person's home address"
+    assert address_prop.get("type") == "object"
+    assert "street" in address_prop.get("properties", {})

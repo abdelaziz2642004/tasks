@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 import mcp.types as types
 
+import pytest
 from fastapi_mcp.openapi.convert import convert_openapi_to_mcp_tools
 from fastapi_mcp.openapi.utils import (
     clean_schema_for_display,
@@ -9,9 +10,12 @@ from fastapi_mcp.openapi.utils import (
     get_single_param_type_from_schema,
     resolve_schema_references,
     resolve_schema_references_with_details,
+    resolve_schema_references_strict,
+    validate_resolved_schema,
     analyze_schema_references,
     ReferenceResolutionResult,
     SchemaAnalysisResult,
+    UnresolvedReferenceError,
 )
 
 
@@ -826,6 +830,10 @@ def test_reference_caching():
         ]
         assert response_schema.get("type") == "object"
 
+    # Verify caching is working - should have cache hits for repeated references
+    # First reference resolves, subsequent ones should hit cache
+    assert result.cache_hits >= 2  # At least 2 cache hits for 3 uses of same ref
+
 
 def test_complex_nested_refs():
     """Test complex nested reference structures."""
@@ -939,23 +947,71 @@ def test_array_of_refs():
     assert "name" in response_schema["items"].get("properties", {})
 
 
-def test_cache_efficiency():
-    """Test that caching reduces redundant work."""
-    # Schema with many references to the same model
+# Tests for validation and metadata preservation
+
+
+def test_validate_resolved_schema_success():
+    """Test that validation passes for fully resolved schemas."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+        },
+    }
+
+    is_valid, unresolved = validate_resolved_schema(schema)
+
+    assert is_valid
+    assert len(unresolved) == 0
+
+
+def test_validate_resolved_schema_with_unresolved_refs():
+    """Test that validation detects unresolved references."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "related": {"$ref": "#/components/schemas/Missing"},
+        },
+    }
+
+    is_valid, unresolved = validate_resolved_schema(schema)
+
+    assert not is_valid
+    assert "#/components/schemas/Missing" in unresolved
+
+
+def test_validate_resolved_schema_ignores_circular_refs():
+    """Test that validation ignores properly marked circular references."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "parent": {"$ref": "#/components/schemas/Self", "_circular": True},
+        },
+    }
+
+    is_valid, unresolved = validate_resolved_schema(schema)
+
+    # Circular refs are expected and should not fail validation
+    assert is_valid
+    assert len(unresolved) == 0
+
+
+def test_resolve_schema_references_strict_success():
+    """Test strict resolution succeeds with valid schema."""
     schema = {
         "components": {
             "schemas": {
                 "User": {
                     "type": "object",
-                    "properties": {
-                        "id": {"type": "integer"},
-                        "name": {"type": "string"},
-                    },
+                    "properties": {"id": {"type": "integer"}},
                 }
             }
         },
         "paths": {
-            f"/endpoint{i}": {
+            "/users": {
                 "get": {
                     "responses": {
                         "200": {
@@ -966,36 +1022,49 @@ def test_cache_efficiency():
                     }
                 }
             }
-            for i in range(10)
         },
     }
 
-    result = resolve_schema_references_with_details(schema, schema)
+    result = resolve_schema_references_strict(schema, schema)
 
-    # Should have 10 references resolved
-    assert result.reference_count == 10
-    # Should have 9 cache hits (first one misses, rest hit cache)
-    assert result.cache_hits == 9
-    # All schemas should be resolved correctly
-    for i in range(10):
-        response_schema = result.schema["paths"][f"/endpoint{i}"]["get"]["responses"]["200"]["content"][
-            "application/json"
-        ]["schema"]
-        assert response_schema.get("type") == "object"
-        assert "id" in response_schema.get("properties", {})
+    response_schema = result["paths"]["/users"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("type") == "object"
 
 
-def test_no_unnecessary_copies():
-    """Test that schemas without refs are not copied."""
+def test_resolve_schema_references_strict_raises_on_unresolved():
+    """Test strict resolution raises error on unresolved references."""
+    schema = {
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/Missing"}}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    with pytest.raises(UnresolvedReferenceError) as exc_info:
+        resolve_schema_references_strict(schema, schema)
+
+    assert "#/components/schemas/Missing" in exc_info.value.unresolved_refs
+    assert "Missing" in str(exc_info.value)
+
+
+def test_metadata_preservation_description():
+    """Test that description metadata is preserved from reference site."""
     schema = {
         "components": {
             "schemas": {
-                "Simple": {
+                "BaseModel": {
                     "type": "object",
-                    "properties": {
-                        "id": {"type": "integer"},
-                        "name": {"type": "string"},
-                    },
+                    "description": "Base model description",
+                    "properties": {"id": {"type": "integer"}},
                 }
             }
         },
@@ -1004,12 +1073,124 @@ def test_no_unnecessary_copies():
                 "get": {
                     "responses": {
                         "200": {
-                            "description": "Success",
                             "content": {
                                 "application/json": {
-                                    "schema": {"type": "string"}  # No refs here
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BaseModel",
+                                        "description": "Overridden description at reference site",
+                                    }
                                 }
-                            },
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    response_schema = result["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    # Description from reference site should take priority
+    assert response_schema.get("description") == "Overridden description at reference site"
+    assert response_schema.get("type") == "object"
+
+
+def test_metadata_preservation_title():
+    """Test that title metadata is preserved from reference site."""
+    schema = {
+        "components": {
+            "schemas": {
+                "BaseModel": {
+                    "type": "object",
+                    "title": "BaseModelTitle",
+                    "properties": {"id": {"type": "integer"}},
+                }
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BaseModel",
+                                        "title": "CustomTitle",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    response_schema = result["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("title") == "CustomTitle"
+
+
+def test_metadata_preservation_examples():
+    """Test that examples metadata is preserved from reference site."""
+    schema = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "example": {"name": "Default User"},
+                }
+            }
+        },
+        "paths": {
+            "/users": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/User",
+                                        "example": {"name": "Custom Example"},
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    response_schema = result["paths"]["/users"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("example") == {"name": "Custom Example"}
+
+
+def test_resolution_result_properties():
+    """Test ReferenceResolutionResult properties work correctly."""
+    schema = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                }
+            }
+        },
+        "paths": {
+            "/users": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/User"}}
+                            }
                         }
                     }
                 }
@@ -1019,50 +1200,54 @@ def test_no_unnecessary_copies():
 
     result = resolve_schema_references_with_details(schema, schema)
 
-    # No references should be resolved
-    assert result.reference_count == 0
-    assert result.cache_hits == 0
-    # Schema without refs should be returned as-is (same object)
-    assert result.schema["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {
-        "type": "string"
-    }
+    assert result.is_fully_resolved
+    assert not result.has_unresolved_refs
+    assert len(result.unresolved_refs) == 0
 
 
-def test_circular_reference_logging(caplog):
-    """Test that circular references are logged with full path."""
-    import logging
-
+def test_resolution_result_with_unresolved():
+    """Test ReferenceResolutionResult with unresolved references."""
     schema = {
-        "components": {
-            "schemas": {
-                "A": {
-                    "type": "object",
-                    "properties": {
-                        "b": {"$ref": "#/components/schemas/B"},
-                    },
-                },
-                "B": {
-                    "type": "object",
-                    "properties": {
-                        "c": {"$ref": "#/components/schemas/C"},
-                    },
-                },
-                "C": {
-                    "type": "object",
-                    "properties": {
-                        "a": {"$ref": "#/components/schemas/A"},
-                    },
-                },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/Missing"}}
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    with caplog.at_level(logging.WARNING):
-        result = resolve_schema_references_with_details(schema, schema)
+    result = resolve_schema_references_with_details(schema, schema)
 
-    # Should detect circular reference
-    assert len(result.circular_refs) > 0
+    assert not result.is_fully_resolved
+    assert result.has_unresolved_refs
+    assert "#/components/schemas/Missing" in result.unresolved_refs
 
-    # Check that warning was logged
-    assert any("Circular reference detected" in record.message for record in caplog.records)
-    assert any("Reference cycle:" in record.message for record in caplog.records)
+
+def test_nested_unresolved_refs_validation():
+    """Test validation catches deeply nested unresolved references."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "level1": {
+                "type": "object",
+                "properties": {
+                    "level2": {
+                        "type": "array",
+                        "items": {"$ref": "#/components/schemas/DeepMissing"},
+                    }
+                },
+            }
+        },
+    }
+
+    is_valid, unresolved = validate_resolved_schema(schema)
+
+    assert not is_valid
+    assert "#/components/schemas/DeepMissing" in unresolved

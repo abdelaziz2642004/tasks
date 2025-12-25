@@ -7,6 +7,11 @@ from fastapi_mcp.openapi.utils import (
     clean_schema_for_display,
     generate_example_from_schema,
     get_single_param_type_from_schema,
+    resolve_schema_references,
+    resolve_schema_references_with_details,
+    analyze_schema_references,
+    ReferenceResolutionResult,
+    SchemaAnalysisResult,
 )
 
 
@@ -422,3 +427,513 @@ def test_body_params_edge_cases(complex_fastapi_app: FastAPI):
     if "items" in properties:
         item_props = properties["items"]["items"]["properties"]
         assert "total" in item_props
+
+
+# Tests for improved reference resolution
+
+
+def test_circular_reference_detection():
+    """Test that circular references are detected and handled gracefully."""
+    # Schema with circular reference: A -> B -> A
+    schema = {
+        "components": {
+            "schemas": {
+                "NodeA": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "child": {"$ref": "#/components/schemas/NodeB"},
+                    },
+                },
+                "NodeB": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "integer"},
+                        "parent": {"$ref": "#/components/schemas/NodeA"},
+                    },
+                },
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "operationId": "test_op",
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/NodeA"}
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    # Should not raise an error
+    result = resolve_schema_references_with_details(schema, schema)
+
+    assert isinstance(result, ReferenceResolutionResult)
+    assert len(result.circular_refs) > 0
+    assert "#/components/schemas/NodeA" in result.circular_refs or "#/components/schemas/NodeB" in result.circular_refs
+
+
+def test_self_referencing_schema():
+    """Test schema that references itself (common in tree structures)."""
+    schema = {
+        "components": {
+            "schemas": {
+                "TreeNode": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"},
+                        "children": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/TreeNode"},
+                        },
+                    },
+                }
+            }
+        }
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    assert "#/components/schemas/TreeNode" in result.circular_refs
+
+
+def test_deeply_nested_references():
+    """Test handling of deeply nested references."""
+    # Create a chain: A -> B -> C -> D -> E
+    schema = {
+        "components": {
+            "schemas": {
+                "LevelA": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/LevelB"}},
+                },
+                "LevelB": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/LevelC"}},
+                },
+                "LevelC": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/LevelD"}},
+                },
+                "LevelD": {
+                    "type": "object",
+                    "properties": {"next": {"$ref": "#/components/schemas/LevelE"}},
+                },
+                "LevelE": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                },
+            }
+        }
+    }
+
+    # Should resolve without issues
+    result = resolve_schema_references(schema, schema)
+
+    # Verify the chain was resolved
+    assert "components" in result
+    level_a = result["components"]["schemas"]["LevelA"]
+    assert "properties" in level_a
+    assert "next" in level_a["properties"]
+
+
+def test_unresolved_reference_warning():
+    """Test that unresolved references generate warnings."""
+    schema = {
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/NonExistent"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    assert len(result.warnings) > 0
+    assert any("NonExistent" in w for w in result.warnings)
+
+
+def test_analyze_schema_circular_refs():
+    """Test schema analysis detects circular references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Parent": {
+                    "type": "object",
+                    "properties": {
+                        "child": {"$ref": "#/components/schemas/Child"},
+                    },
+                },
+                "Child": {
+                    "type": "object",
+                    "properties": {
+                        "parent": {"$ref": "#/components/schemas/Parent"},
+                    },
+                },
+            }
+        }
+    }
+
+    analysis = analyze_schema_references(schema)
+
+    assert isinstance(analysis, SchemaAnalysisResult)
+    assert len(analysis.circular_refs) > 0
+    assert analysis.has_issues
+
+
+def test_analyze_schema_external_refs():
+    """Test schema analysis detects external references."""
+    schema = {
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "https://example.com/schema.json#/Model"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    analysis = analyze_schema_references(schema)
+
+    assert len(analysis.external_refs) == 1
+    assert "https://example.com/schema.json#/Model" in analysis.external_refs
+    assert analysis.has_issues
+
+
+def test_analyze_schema_unresolved_refs():
+    """Test schema analysis detects unresolved references."""
+    schema = {
+        "components": {"schemas": {}},
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Missing"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    analysis = analyze_schema_references(schema)
+
+    assert len(analysis.unresolved_refs) == 1
+    assert "#/components/schemas/Missing" in analysis.unresolved_refs
+    assert analysis.has_issues
+
+
+def test_analyze_schema_no_issues():
+    """Test schema analysis with no issues."""
+    schema = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "name": {"type": "string"},
+                    },
+                }
+            }
+        },
+        "paths": {
+            "/users": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/User"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    analysis = analyze_schema_references(schema)
+
+    assert len(analysis.all_refs) == 1
+    assert len(analysis.circular_refs) == 0
+    assert len(analysis.unresolved_refs) == 0
+    assert len(analysis.external_refs) == 0
+    assert not analysis.has_issues
+
+
+def test_json_pointer_special_characters():
+    """Test JSON pointer resolution with special characters."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Model/With/Slashes": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                }
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    # ~1 encodes / in JSON pointer (RFC 6901)
+                                    "schema": {"$ref": "#/components/schemas/Model~1With~1Slashes"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    # The reference should be resolved
+    response_schema = result["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("type") == "object"
+    assert "value" in response_schema.get("properties", {})
+
+
+def test_reference_with_additional_properties():
+    """Test that additional properties alongside $ref are preserved."""
+    schema = {
+        "components": {
+            "schemas": {
+                "BaseModel": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                }
+            }
+        },
+        "paths": {
+            "/test": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BaseModel",
+                                        "description": "Custom description",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    response_schema = result["paths"]["/test"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("type") == "object"
+    assert response_schema.get("description") == "Custom description"
+
+
+def test_reference_caching():
+    """Test that reference resolution uses caching efficiently."""
+    # Schema where the same reference is used multiple times
+    schema = {
+        "components": {
+            "schemas": {
+                "SharedModel": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                }
+            }
+        },
+        "paths": {
+            "/a": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/SharedModel"}}
+                            }
+                        }
+                    }
+                }
+            },
+            "/b": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/SharedModel"}}
+                            }
+                        }
+                    }
+                }
+            },
+            "/c": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {"schema": {"$ref": "#/components/schemas/SharedModel"}}
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    }
+
+    result = resolve_schema_references_with_details(schema, schema)
+
+    # All three should be resolved
+    for path in ["/a", "/b", "/c"]:
+        response_schema = result.schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+        assert response_schema.get("type") == "object"
+
+
+def test_complex_nested_refs():
+    """Test complex nested reference structures."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "street": {"type": "string"},
+                        "city": {"type": "string"},
+                    },
+                },
+                "Person": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "address": {"$ref": "#/components/schemas/Address"},
+                    },
+                },
+                "Company": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "ceo": {"$ref": "#/components/schemas/Person"},
+                        "headquarters": {"$ref": "#/components/schemas/Address"},
+                    },
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    company = result["components"]["schemas"]["Company"]
+    assert "properties" in company
+    assert company["properties"]["ceo"].get("type") == "object"
+    assert "address" in company["properties"]["ceo"]["properties"]
+    assert company["properties"]["ceo"]["properties"]["address"].get("type") == "object"
+    assert company["properties"]["headquarters"].get("type") == "object"
+
+
+def test_allof_with_refs():
+    """Test allOf with references."""
+    schema = {
+        "components": {
+            "schemas": {
+                "BaseModel": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                },
+                "ExtendedModel": {
+                    "allOf": [
+                        {"$ref": "#/components/schemas/BaseModel"},
+                        {
+                            "type": "object",
+                            "properties": {"extra": {"type": "string"}},
+                        },
+                    ]
+                },
+            }
+        }
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    extended = result["components"]["schemas"]["ExtendedModel"]
+    assert "allOf" in extended
+    assert len(extended["allOf"]) == 2
+    # First item should be resolved
+    assert extended["allOf"][0].get("type") == "object"
+    assert "id" in extended["allOf"][0].get("properties", {})
+
+
+def test_array_of_refs():
+    """Test array with items as reference."""
+    schema = {
+        "components": {
+            "schemas": {
+                "Item": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                }
+            }
+        },
+        "paths": {
+            "/items": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {"$ref": "#/components/schemas/Item"},
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    result = resolve_schema_references(schema, schema)
+
+    response_schema = result["paths"]["/items"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema.get("type") == "array"
+    assert response_schema["items"].get("type") == "object"
+    assert "name" in response_schema["items"].get("properties", {})

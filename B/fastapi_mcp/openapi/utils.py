@@ -268,6 +268,146 @@ def resolve_schema_references_with_details(
     )
 
 
+@dataclass
+class SchemaAnalysisResult:
+    """Result of schema analysis for problematic patterns."""
+
+    # All unique $ref paths found in the schema
+    all_refs: Set[str] = field(default_factory=set)
+    # References that form circular dependencies
+    circular_refs: Set[str] = field(default_factory=set)
+    # References that could not be resolved
+    unresolved_refs: Set[str] = field(default_factory=set)
+    # External references (not starting with #/)
+    external_refs: Set[str] = field(default_factory=set)
+    # Maximum nesting depth of references
+    max_depth: int = 0
+    # Total number of reference usages
+    total_ref_count: int = 0
+    # Warnings about potential issues
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def has_issues(self) -> bool:
+        """Check if any problematic patterns were detected."""
+        return bool(
+            self.circular_refs
+            or self.unresolved_refs
+            or self.external_refs
+            or self.warnings
+        )
+
+
+def _analyze_refs_recursive(
+    schema_part: Any,
+    reference_schema: Dict[str, Any],
+    result: SchemaAnalysisResult,
+    visited: Set[str],
+    current_path: List[str],
+    depth: int,
+) -> None:
+    """Recursively analyze schema for reference patterns."""
+    if not isinstance(schema_part, dict):
+        if isinstance(schema_part, list):
+            for item in schema_part:
+                _analyze_refs_recursive(
+                    item, reference_schema, result, visited, current_path, depth
+                )
+        return
+
+    result.max_depth = max(result.max_depth, depth)
+
+    if "$ref" in schema_part:
+        ref_path = schema_part["$ref"]
+        result.total_ref_count += 1
+        result.all_refs.add(ref_path)
+
+        # Check for external references
+        if not ref_path.startswith("#/"):
+            result.external_refs.add(ref_path)
+            if f"External reference not supported: {ref_path}" not in result.warnings:
+                result.warnings.append(f"External reference not supported: {ref_path}")
+            return
+
+        # Check for circular reference
+        if ref_path in current_path:
+            result.circular_refs.add(ref_path)
+            return
+
+        # Check if reference can be resolved
+        resolved = _resolve_json_pointer(reference_schema, ref_path)
+        if resolved is None:
+            result.unresolved_refs.add(ref_path)
+            if f"Unresolved reference: {ref_path}" not in result.warnings:
+                result.warnings.append(f"Unresolved reference: {ref_path}")
+            return
+
+        # Continue analyzing the resolved schema
+        if ref_path not in visited:
+            visited.add(ref_path)
+            _analyze_refs_recursive(
+                resolved,
+                reference_schema,
+                result,
+                visited,
+                current_path + [ref_path],
+                depth + 1,
+            )
+
+    # Analyze nested structures
+    for key, value in schema_part.items():
+        if key != "$ref":
+            _analyze_refs_recursive(
+                value, reference_schema, result, visited, current_path, depth + 1
+            )
+
+
+def analyze_schema_references(
+    schema: Dict[str, Any],
+    reference_schema: Optional[Dict[str, Any]] = None,
+) -> SchemaAnalysisResult:
+    """
+    Analyze a schema for problematic reference patterns.
+
+    This function detects:
+    - Circular references
+    - Unresolved references
+    - External references (not supported)
+    - Deep nesting that could cause performance issues
+
+    Args:
+        schema: The schema to analyze
+        reference_schema: The complete schema for resolving references.
+                         If None, uses schema itself.
+
+    Returns:
+        SchemaAnalysisResult with details about detected patterns
+    """
+    if reference_schema is None:
+        reference_schema = schema
+
+    result = SchemaAnalysisResult()
+    visited: Set[str] = set()
+
+    _analyze_refs_recursive(schema, reference_schema, result, visited, [], 0)
+
+    # Add warnings for deep nesting
+    if result.max_depth > MAX_REFERENCE_DEPTH // 2:
+        result.warnings.append(
+            f"Deep reference nesting detected (depth: {result.max_depth}). "
+            f"This may cause performance issues."
+        )
+
+    # Add warnings for high reference count
+    if result.total_ref_count > MAX_REFERENCE_COUNT // 2:
+        result.warnings.append(
+            f"High reference count detected ({result.total_ref_count}). "
+            f"This may cause performance issues."
+        )
+
+    return result
+
+
 def clean_schema_for_display(schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     Clean up a schema for display by removing internal fields.

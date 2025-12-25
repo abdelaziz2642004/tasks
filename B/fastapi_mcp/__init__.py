@@ -17,7 +17,9 @@ from .types import AuthConfig, OAuthMetadata
 from .openapi.utils import (
     ReferenceResolutionContext,
     ReferenceResolutionResult,
+    SchemaAnalysisResult,
     resolve_schema_references_with_details,
+    analyze_schema_references,
 )
 
 
@@ -27,5 +29,7 @@ __all__ = [
     "OAuthMetadata",
     "ReferenceResolutionContext",
     "ReferenceResolutionResult",
+    "SchemaAnalysisResult",
     "resolve_schema_references_with_details",
+    "analyze_schema_references",
 ]

@@ -507,6 +507,11 @@ class FastApiMCP:
 
         return media_type, charset
 
+    # Maximum size for binary content to include base64 data (1MB)
+    _MAX_BINARY_SIZE_FOR_BASE64 = 1024 * 1024
+    # Maximum size for images to return as ImageContent (5MB)
+    _MAX_IMAGE_SIZE = 5 * 1024 * 1024
+
     def _format_response_for_llm(
         self,
         response: httpx.Response,
@@ -522,6 +527,7 @@ class FastApiMCP:
         """
         content_type_header = response.headers.get("content-type")
         media_type, charset = self._parse_content_type(content_type_header)
+        content_length = len(response.content)
 
         # Handle empty responses (e.g., 204 No Content)
         if not response.content:
@@ -540,6 +546,16 @@ class FastApiMCP:
 
         # Handle image responses - return as ImageContent with base64 encoding
         if media_type.startswith("image/"):
+            if content_length > self._MAX_IMAGE_SIZE:
+                # For very large images, return a summary instead
+                return [
+                    types.TextContent(
+                        type="text",
+                        text=f"[Image content: {media_type}, {content_length:,} bytes]\n\n"
+                        f"Image is too large to include inline ({content_length / (1024 * 1024):.2f} MB). "
+                        f"Consider downloading separately or requesting a smaller image.",
+                    )
+                ]
             image_data = base64.standard_b64encode(response.content).decode("ascii")
             return [types.ImageContent(type="image", data=image_data, mimeType=media_type)]
 
@@ -566,22 +582,33 @@ class FastApiMCP:
         if media_type.startswith("text/"):
             return [types.TextContent(type="text", text=response.text)]
 
-        # Handle other binary responses - return as base64 with description
-        # This includes PDFs, audio, video, etc.
+        # Handle other binary responses (PDFs, audio, video, etc.)
+        # First try to decode as text in case content-type is misconfigured
         try:
-            # First try to decode as text in case content-type is misconfigured
             text = response.text
-            if text and text.isprintable() or "\n" in text or "\t" in text:
+            if text and (text.isprintable() or "\n" in text or "\t" in text):
                 return [types.TextContent(type="text", text=text)]
         except (UnicodeDecodeError, ValueError):
             pass
 
-        # For true binary content, encode as base64 and describe
+        # For true binary content, check size and format appropriately
+        if content_length > self._MAX_BINARY_SIZE_FOR_BASE64:
+            # Large binary: return summary only
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"[Binary content: {media_type}, {content_length:,} bytes]\n\n"
+                    f"Content is too large to include inline ({content_length / (1024 * 1024):.2f} MB). "
+                    f"The response contains binary data that should be downloaded separately.",
+                )
+            ]
+
+        # Small binary: encode as base64 and include
         binary_data = base64.standard_b64encode(response.content).decode("ascii")
         return [
             types.TextContent(
                 type="text",
-                text=f"[Binary content: {media_type}, {len(response.content)} bytes]\n\nBase64 encoded data:\n{binary_data}",
+                text=f"[Binary content: {media_type}, {content_length:,} bytes]\n\nBase64 encoded data:\n{binary_data}",
             )
         ]
 

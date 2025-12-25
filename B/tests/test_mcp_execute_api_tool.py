@@ -754,3 +754,127 @@ async def test_execute_api_tool_json_with_invalid_json_content(simple_fastapi_ap
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
     assert result[0].text == "This is not JSON"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_large_image_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns a large image (exceeds size limit)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create a large fake image (larger than _MAX_IMAGE_SIZE)
+    large_image_bytes = b'\x89PNG' + (b'\x00' * (6 * 1024 * 1024))  # ~6MB
+
+    # Mock the HTTP client response with a large image
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "image/png"}
+    mock_response.content = large_image_bytes
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is a TextContent with summary (not ImageContent)
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Image content: image/png" in result[0].text
+    assert "too large" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_large_binary_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns large binary content (exceeds size limit)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create large binary content (larger than _MAX_BINARY_SIZE_FOR_BASE64)
+    large_binary = b'\x00\x01\x02' * (500 * 1024)  # ~1.5MB
+
+    # Mock the HTTP client response with large binary
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = large_binary
+    mock_response.text = None  # Will raise exception when accessed
+    mock_response.status_code = 200
+
+    # Make text access raise an exception (simulating true binary)
+    type(mock_response).text = property(lambda self: (_ for _ in ()).throw(UnicodeDecodeError('utf-8', b'', 0, 1, 'invalid')))
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is a summary (no base64 data)
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/octet-stream" in result[0].text
+    assert "too large" in result[0].text
+    assert "Base64" not in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_small_binary_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns small binary content (within size limit)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create small binary content
+    small_binary = b'\x00\x01\x02\x03\x04\x05'
+
+    # Mock the HTTP client response with small binary
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = small_binary
+    mock_response.status_code = 200
+
+    # Make text access raise an exception (simulating true binary)
+    type(mock_response).text = property(lambda self: (_ for _ in ()).throw(UnicodeDecodeError('utf-8', b'', 0, 1, 'invalid')))
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result includes base64 data
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/octet-stream" in result[0].text
+    assert "Base64 encoded data:" in result[0].text
+    # Verify the base64 decodes back to original
+    assert base64.standard_b64encode(small_binary).decode("ascii") in result[0].text

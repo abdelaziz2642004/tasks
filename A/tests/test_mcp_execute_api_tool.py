@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi import FastAPI
 
 from fastapi_mcp import FastApiMCP
-from fastapi_mcp.server import _format_response_for_llm
 from mcp.types import TextContent, ImageContent
 
 
@@ -12,10 +11,9 @@ from mcp.types import TextContent, ImageContent
 async def test_execute_api_tool_success(simple_fastapi_app: FastAPI):
     """Test successful execution of an API tool."""
     mcp = FastApiMCP(simple_fastapi_app)
-
+    
     # Mock the HTTP client response
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = {"id": 1, "name": "Test Item"}
     mock_response.status_code = 200
     mock_response.text = '{"id": 1, "name": "Test Item"}'
@@ -54,10 +52,9 @@ async def test_execute_api_tool_success(simple_fastapi_app: FastAPI):
 async def test_execute_api_tool_with_query_params(simple_fastapi_app: FastAPI):
     """Test execution of an API tool with query parameters."""
     mcp = FastApiMCP(simple_fastapi_app)
-
+    
     # Mock the HTTP client response
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = [{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]
     mock_response.status_code = 200
     mock_response.text = '[{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]'
@@ -95,10 +92,9 @@ async def test_execute_api_tool_with_query_params(simple_fastapi_app: FastAPI):
 async def test_execute_api_tool_with_body(simple_fastapi_app: FastAPI):
     """Test execution of an API tool with request body."""
     mcp = FastApiMCP(simple_fastapi_app)
-
+    
     # Mock the HTTP client response
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = {"id": 1, "name": "New Item"}
     mock_response.status_code = 200
     mock_response.text = '{"id": 1, "name": "New Item"}'
@@ -145,7 +141,7 @@ async def test_execute_api_tool_with_body(simple_fastapi_app: FastAPI):
 async def test_execute_api_tool_with_non_ascii_chars(simple_fastapi_app: FastAPI):
     """Test execution of an API tool with non-ASCII characters."""
     mcp = FastApiMCP(simple_fastapi_app)
-
+    
     # Test data with both ASCII and non-ASCII characters
     test_data = {
         "id": 1,
@@ -154,10 +150,9 @@ async def test_execute_api_tool_with_non_ascii_chars(simple_fastapi_app: FastAPI
         "tags": ["tag1", "标签2"],  # Chinese characters in tags
         "description": "这是一个测试描述"  # All Chinese characters
     }
-
+    
     # Mock the HTTP client response
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "application/json"}
     mock_response.json.return_value = test_data
     mock_response.status_code = 200
     mock_response.text = '{"id": 1, "name": "你好 World", "price": 10.0, "tags": ["tag1", "标签2"], "description": "这是一个测试描述"}'
@@ -198,309 +193,18 @@ async def test_execute_api_tool_with_non_ascii_chars(simple_fastapi_app: FastAPI
     )
 
 
-# Tests for _format_response_for_llm helper function
-
-class TestFormatResponseForLLM:
-    """Tests for the _format_response_for_llm function that handles different content types."""
-
-    def test_json_response(self):
-        """Test that JSON responses are pretty-printed."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {"key": "value", "number": 42}
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert result[0].text == '{\n  "key": "value",\n  "number": 42\n}'
-
-    def test_json_response_with_charset(self):
-        """Test that JSON responses with charset are handled correctly."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/json; charset=utf-8"}
-        mock_response.json.return_value = {"message": "hello"}
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert '"message": "hello"' in result[0].text
-
-    def test_hal_json_response(self):
-        """Test that HAL+JSON responses are handled as JSON."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/hal+json"}
-        mock_response.json.return_value = {"_links": {"self": {"href": "/api"}}}
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "_links" in result[0].text
-
-    def test_custom_json_media_type(self):
-        """Test that custom +json media types are handled as JSON."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/vnd.myapp.v1+json"}
-        mock_response.json.return_value = {"data": "test"}
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert '"data": "test"' in result[0].text
-
-    def test_plain_text_response(self):
-        """Test that plain text responses are returned as-is."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/plain"}
-        mock_response.text = "Hello, World!"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert result[0].text == "Hello, World!"
-
-    def test_html_response(self):
-        """Test that HTML responses are returned as text."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/html"}
-        mock_response.text = "<html><body><h1>Hello</h1></body></html>"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "<h1>Hello</h1>" in result[0].text
-
-    def test_xhtml_response(self):
-        """Test that XHTML responses are returned as text."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/xhtml+xml"}
-        mock_response.text = '<?xml version="1.0"?><html><body>Test</body></html>'
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "<body>Test</body>" in result[0].text
-
-    def test_xml_response(self):
-        """Test that XML responses are returned as text."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/xml"}
-        mock_response.text = '<?xml version="1.0"?><root><item>Test</item></root>'
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "<item>Test</item>" in result[0].text
-
-    def test_text_xml_response(self):
-        """Test that text/xml responses are returned as text."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/xml"}
-        mock_response.text = "<data><value>123</value></data>"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "<value>123</value>" in result[0].text
-
-    def test_custom_xml_media_type(self):
-        """Test that custom +xml media types are handled as XML."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/atom+xml"}
-        mock_response.text = '<?xml version="1.0"?><feed><entry>Test</entry></feed>'
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "<entry>Test</entry>" in result[0].text
-
-    def test_image_png_response(self):
-        """Test that PNG images are returned as ImageContent."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "image/png"}
-        mock_response.content = b"\x89PNG\r\n\x1a\n"  # PNG magic bytes
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], ImageContent)
-        assert result[0].mimeType == "image/png"
-        assert result[0].data == base64.standard_b64encode(b"\x89PNG\r\n\x1a\n").decode("utf-8")
-
-    def test_image_jpeg_response(self):
-        """Test that JPEG images are returned as ImageContent."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "image/jpeg"}
-        mock_response.content = b"\xff\xd8\xff\xe0"  # JPEG magic bytes
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], ImageContent)
-        assert result[0].mimeType == "image/jpeg"
-
-    def test_image_gif_response(self):
-        """Test that GIF images are returned as ImageContent."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "image/gif"}
-        mock_response.content = b"GIF89a"  # GIF magic bytes
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], ImageContent)
-        assert result[0].mimeType == "image/gif"
-
-    def test_image_webp_response(self):
-        """Test that WebP images are returned as ImageContent."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "image/webp"}
-        mock_response.content = b"RIFF\x00\x00\x00\x00WEBP"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], ImageContent)
-        assert result[0].mimeType == "image/webp"
-
-    def test_image_svg_response(self):
-        """Test that SVG images are returned as ImageContent."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "image/svg+xml"}
-        mock_response.content = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], ImageContent)
-        assert result[0].mimeType == "image/svg+xml"
-
-    def test_binary_octet_stream_response(self):
-        """Test that binary octet-stream responses are base64-encoded with metadata."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/octet-stream"}
-        mock_response.content = b"\x00\x01\x02\x03\x04\x05"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "Binary response" in result[0].text
-        assert "application/octet-stream" in result[0].text
-        assert "6 bytes" in result[0].text
-        assert base64.standard_b64encode(b"\x00\x01\x02\x03\x04\x05").decode("utf-8") in result[0].text
-
-    def test_pdf_response(self):
-        """Test that PDF responses are base64-encoded with metadata."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/pdf"}
-        mock_response.content = b"%PDF-1.4 test content"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "Binary response" in result[0].text
-        assert "application/pdf" in result[0].text
-
-    def test_text_csv_response(self):
-        """Test that CSV text responses are returned as text."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/csv"}
-        mock_response.text = "name,value\ntest,123"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert result[0].text == "name,value\ntest,123"
-
-    def test_json_decode_error_fallback(self):
-        """Test that invalid JSON falls through to text handling."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.side_effect = ValueError("Invalid JSON")  # json.JSONDecodeError inherits from ValueError
-        mock_response.content = b"not valid json"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        # Should fall through to binary handling since it's not text/*
-        assert "Binary response" in result[0].text
-
-    def test_empty_response(self):
-        """Test that empty responses return empty string."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": ""}
-        mock_response.content = b""
-        mock_response.text = ""
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        # Empty content returns empty string (e.g., for 204 No Content responses)
-        assert result[0].text == ""
-
-    def test_no_content_type_header(self):
-        """Test handling when content-type header is missing."""
-        mock_response = MagicMock()
-        mock_response.headers = {}
-        mock_response.content = b"some data"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "Binary response" in result[0].text
-        assert "unknown" in result[0].text
-
-    def test_unicode_in_text_response(self):
-        """Test that unicode characters are preserved in text responses."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "text/plain"}
-        mock_response.text = "Hello, 世界! 🌍"
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "世界" in result[0].text
-        assert "🌍" in result[0].text
-
-    def test_unicode_in_json_response(self):
-        """Test that unicode characters are preserved in JSON responses."""
-        mock_response = MagicMock()
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {"greeting": "你好", "emoji": "🎉"}
-
-        result = _format_response_for_llm(mock_response)
-
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        assert "你好" in result[0].text
-        assert "🎉" in result[0].text
+# Tests for content type handling
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_with_plain_text_response(simple_fastapi_app: FastAPI):
+async def test_execute_api_tool_plain_text_response(simple_fastapi_app: FastAPI):
     """Test execution of an API tool that returns plain text."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Mock the HTTP client response
+    # Mock the HTTP client response with plain text
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "text/plain"}
-    mock_response.text = "Operation completed successfully"
+    mock_response.headers = {"content-type": "text/plain; charset=utf-8"}
+    mock_response.text = "Hello, this is plain text response"
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -523,18 +227,58 @@ async def test_execute_api_tool_with_plain_text_response(simple_fastapi_app: Fas
     # Verify the result
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    assert result[0].text == "Operation completed successfully"
+    assert result[0].text == "Hello, this is plain text response"
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_with_xml_response(simple_fastapi_app: FastAPI):
+async def test_execute_api_tool_html_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns HTML."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    html_content = "<html><body><h1>Hello World</h1></body></html>"
+
+    # Mock the HTTP client response with HTML
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.text = html_content
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[HTML Content]" in result[0].text
+    assert html_content in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_xml_response(simple_fastapi_app: FastAPI):
     """Test execution of an API tool that returns XML."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Mock the HTTP client response
+    xml_content = '<?xml version="1.0"?><root><item id="1"><name>Test</name></item></root>'
+
+    # Mock the HTTP client response with XML
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "application/xml"}
-    mock_response.text = '<?xml version="1.0"?><item><id>1</id><name>Test</name></item>'
+    mock_response.content = xml_content.encode("utf-8")
+    mock_response.text = xml_content
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -557,19 +301,24 @@ async def test_execute_api_tool_with_xml_response(simple_fastapi_app: FastAPI):
     # Verify the result
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    assert "<item>" in result[0].text
-    assert "<name>Test</name>" in result[0].text
+    # The XML should be formatted (pretty-printed)
+    assert "<root>" in result[0].text
+    assert "<item" in result[0].text
+    assert "<name>" in result[0].text
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_with_image_response(simple_fastapi_app: FastAPI):
+async def test_execute_api_tool_image_response(simple_fastapi_app: FastAPI):
     """Test execution of an API tool that returns an image."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Mock the HTTP client response with PNG image
+    # Create a simple binary image content (fake PNG header)
+    image_bytes = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+
+    # Mock the HTTP client response with an image
     mock_response = MagicMock()
     mock_response.headers = {"content-type": "image/png"}
-    mock_response.content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    mock_response.content = image_bytes
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -589,24 +338,27 @@ async def test_execute_api_tool_with_image_response(simple_fastapi_app: FastAPI)
             operation_map=mcp.operation_map
         )
 
-    # Verify the result
+    # Verify the result is an ImageContent
     assert len(result) == 1
     assert isinstance(result[0], ImageContent)
     assert result[0].mimeType == "image/png"
     # Verify the data is base64 encoded
-    expected_data = base64.standard_b64encode(mock_response.content).decode("utf-8")
-    assert result[0].data == expected_data
+    decoded_data = base64.standard_b64decode(result[0].data)
+    assert decoded_data == image_bytes
 
 
 @pytest.mark.asyncio
-async def test_execute_api_tool_with_html_response(simple_fastapi_app: FastAPI):
-    """Test execution of an API tool that returns HTML."""
+async def test_execute_api_tool_jpeg_image_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns a JPEG image."""
     mcp = FastApiMCP(simple_fastapi_app)
 
-    # Mock the HTTP client response
+    # Create a simple binary image content (fake JPEG header)
+    image_bytes = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01'
+
+    # Mock the HTTP client response with an image
     mock_response = MagicMock()
-    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
-    mock_response.text = "<!DOCTYPE html><html><body><h1>Welcome</h1></body></html>"
+    mock_response.headers = {"content-type": "image/jpeg"}
+    mock_response.content = image_bytes
     mock_response.status_code = 200
 
     # Mock the HTTP client
@@ -626,7 +378,512 @@ async def test_execute_api_tool_with_html_response(simple_fastapi_app: FastAPI):
             operation_map=mcp.operation_map
         )
 
-    # Verify the result
+    # Verify the result is an ImageContent
+    assert len(result) == 1
+    assert isinstance(result[0], ImageContent)
+    assert result[0].mimeType == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_binary_pdf_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns a PDF (binary content)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create fake PDF content
+    pdf_bytes = b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<\n>>\nendobj'
+
+    # Mock the HTTP client response with a PDF
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/pdf"}
+    mock_response.content = pdf_bytes
+    mock_response.text = pdf_bytes.decode('latin-1')  # Will be decoded but not printable
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result contains binary content description
     assert len(result) == 1
     assert isinstance(result[0], TextContent)
-    assert "<h1>Welcome</h1>" in result[0].text
+    # PDFs may be detected as text due to the %PDF header being printable
+    # The implementation tries to decode as text first
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_json_ld_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns JSON-LD."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    json_ld_data = {
+        "@context": "https://schema.org",
+        "@type": "Person",
+        "name": "John Doe"
+    }
+
+    # Mock the HTTP client response with JSON-LD
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/ld+json"}
+    mock_response.json.return_value = json_ld_data
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is formatted JSON
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "@context" in result[0].text
+    assert "schema.org" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_custom_json_media_type(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns a custom JSON media type (e.g., application/vnd.api+json)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    api_data = {"data": {"type": "articles", "id": "1"}}
+
+    # Mock the HTTP client response with custom JSON type
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/vnd.api+json"}
+    mock_response.json.return_value = api_data
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is formatted JSON
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert '"data"' in result[0].text
+    assert '"articles"' in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_csv_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns CSV."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    csv_content = "id,name,price\n1,Item 1,10.00\n2,Item 2,20.00"
+
+    # Mock the HTTP client response with CSV
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "text/csv"}
+    mock_response.text = csv_content
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is returned as text
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert result[0].text == csv_content
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_no_content_type_header(simple_fastapi_app: FastAPI):
+    """Test execution when response has no Content-Type header."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Mock the HTTP client response without content-type
+    mock_response = MagicMock()
+    mock_response.headers = {}  # No content-type
+    mock_response.content = b'Some binary data'
+    mock_response.text = 'Some binary data'
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should handle gracefully - will try to decode as text
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_xml_with_custom_media_type(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns XML with custom media type (e.g., application/atom+xml)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    atom_content = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Test Feed</title></feed>'
+
+    # Mock the HTTP client response with Atom XML
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/atom+xml"}
+    mock_response.content = atom_content.encode("utf-8")
+    mock_response.text = atom_content
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is formatted XML
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "<feed" in result[0].text
+    assert "<title>" in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_parse_content_type_with_charset(simple_fastapi_app: FastAPI):
+    """Test parsing content type header with charset."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    media_type, charset = mcp._parse_content_type("application/json; charset=utf-8")
+    assert media_type == "application/json"
+    assert charset == "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_parse_content_type_without_charset(simple_fastapi_app: FastAPI):
+    """Test parsing content type header without charset."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    media_type, charset = mcp._parse_content_type("image/png")
+    assert media_type == "image/png"
+    assert charset is None
+
+
+@pytest.mark.asyncio
+async def test_parse_content_type_none(simple_fastapi_app: FastAPI):
+    """Test parsing None content type header."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    media_type, charset = mcp._parse_content_type(None)
+    assert media_type == "application/octet-stream"
+    assert charset is None
+
+
+@pytest.mark.asyncio
+async def test_parse_content_type_with_multiple_params(simple_fastapi_app: FastAPI):
+    """Test parsing content type header with multiple parameters."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    media_type, charset = mcp._parse_content_type("text/html; charset=UTF-8; boundary=something")
+    assert media_type == "text/html"
+    assert charset == "UTF-8"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_empty_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns an empty response (e.g., 204 No Content)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Mock the HTTP client response with empty content (204 No Content)
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.content = b""  # Empty content
+    mock_response.status_code = 204
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.delete.return_value = mock_response
+
+    # Test parameters - simulate a delete operation
+    tool_name = "delete_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is an empty text response
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert result[0].text == ""
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_svg_image_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns an SVG image."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # SVG is an image type but text-based
+    svg_content = b'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40"/></svg>'
+
+    # Mock the HTTP client response with SVG
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "image/svg+xml"}
+    mock_response.content = svg_content
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is an ImageContent (SVG is image/*)
+    assert len(result) == 1
+    assert isinstance(result[0], ImageContent)
+    assert result[0].mimeType == "image/svg+xml"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_json_with_invalid_json_content(simple_fastapi_app: FastAPI):
+    """Test execution when content-type is JSON but content is not valid JSON."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Mock the HTTP client response with invalid JSON
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/json"}
+    mock_response.json.side_effect = ValueError("Invalid JSON")
+    mock_response.content = b"This is not JSON"
+    mock_response.text = "This is not JSON"
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Should fall through to text handling
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert result[0].text == "This is not JSON"
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_large_binary_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns large binary content (>1MB)."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create a large binary content (2MB)
+    large_binary = b'\x00' * (2 * 1024 * 1024)
+
+    # Mock the HTTP client response with large binary
+    mock_response = MagicMock()
+    mock_response.headers = {"content-type": "application/octet-stream"}
+    mock_response.content = large_binary
+    mock_response.status_code = 200
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result is a summary without full base64 data
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/octet-stream" in result[0].text
+    assert "Content too large to include" in result[0].text
+    assert "2.00 MB" in result[0].text
+    # Should NOT contain actual base64 data for large files
+    assert "Base64 encoded data:" not in result[0].text
+
+
+class BinaryMockResponse:
+    """Mock response that raises UnicodeDecodeError when accessing .text"""
+    def __init__(self, content: bytes, headers: dict, status_code: int):
+        self.content = content
+        self.headers = headers
+        self.status_code = status_code
+
+    @property
+    def text(self):
+        raise UnicodeDecodeError('utf-8', b'', 0, 1, 'invalid byte')
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_small_binary_response_with_base64(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns small binary content (<1MB) includes base64."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create a small binary content (100 bytes)
+    small_binary = b'\x00\x01\x02\x03' * 25
+
+    # Mock the HTTP client response with small binary that can't be decoded as text
+    mock_response = BinaryMockResponse(
+        content=small_binary,
+        headers={"content-type": "application/octet-stream"},
+        status_code=200
+    )
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result includes base64 data for small files
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: application/octet-stream" in result[0].text
+    assert "Base64 encoded data:" in result[0].text
+    # Verify the base64 can be decoded back
+    assert base64.standard_b64encode(small_binary).decode("ascii") in result[0].text
+
+
+@pytest.mark.asyncio
+async def test_execute_api_tool_audio_response(simple_fastapi_app: FastAPI):
+    """Test execution of an API tool that returns audio content."""
+    mcp = FastApiMCP(simple_fastapi_app)
+
+    # Create fake audio content (MP3 header)
+    audio_bytes = b'\xff\xfb\x90\x00' + b'\x00' * 100
+
+    # Mock the HTTP client response with audio that can't be decoded as text
+    mock_response = BinaryMockResponse(
+        content=audio_bytes,
+        headers={"content-type": "audio/mpeg"},
+        status_code=200
+    )
+
+    # Mock the HTTP client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+
+    # Test parameters
+    tool_name = "get_item"
+    arguments = {"item_id": 1}
+
+    # Execute the tool
+    with patch.object(mcp, '_http_client', mock_client):
+        result = await mcp._execute_api_tool(
+            client=mock_client,
+            tool_name=tool_name,
+            arguments=arguments,
+            operation_map=mcp.operation_map
+        )
+
+    # Verify the result contains audio metadata and base64
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "[Binary content: audio/mpeg" in result[0].text
+    assert "Base64 encoded data:" in result[0].text

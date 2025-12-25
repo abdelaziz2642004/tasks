@@ -20,95 +20,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _format_response_for_llm(
-    response: httpx.Response,
-) -> List[Union[types.TextContent, types.ImageContent]]:
-    """
-    Format an HTTP response appropriately based on its content type.
-
-    This function handles different response content types and formats them
-    in a way that's useful for LLM consumption:
-    - JSON: Pretty-printed with indentation
-    - Images: Returned as ImageContent with base64-encoded data
-    - XML/HTML: Returned as-is (text)
-    - Plain text: Returned as-is
-    - Binary: Base64-encoded with content type info
-
-    Args:
-        response: The httpx response object
-
-    Returns:
-        A list of MCP content types (TextContent or ImageContent)
-    """
-    content_type = response.headers.get("content-type", "").lower()
-
-    # Extract the main content type (ignore charset and other parameters)
-    main_content_type = content_type.split(";")[0].strip()
-
-    # Handle image responses
-    if main_content_type.startswith("image/"):
-        image_data = base64.standard_b64encode(response.content).decode("utf-8")
-        return [types.ImageContent(
-            type="image",
-            data=image_data,
-            mimeType=main_content_type,
-        )]
-
-    # Handle JSON responses
-    if main_content_type in ("application/json", "application/hal+json", "application/vnd.api+json"):
-        try:
-            result = response.json()
-            result_text = json.dumps(result, indent=2, ensure_ascii=False)
-            return [types.TextContent(type="text", text=result_text)]
-        except (json.JSONDecodeError, ValueError):
-            # Fall through to text handling if JSON parsing fails
-            # ValueError is caught because some HTTP clients raise it for invalid JSON
-            pass
-
-    # Handle JSON-like content types (custom JSON media types like application/xxx+json)
-    if main_content_type.endswith("+json"):
-        try:
-            result = response.json()
-            result_text = json.dumps(result, indent=2, ensure_ascii=False)
-            return [types.TextContent(type="text", text=result_text)]
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Handle XML responses - return as text for LLM to parse
-    if main_content_type in ("application/xml", "text/xml") or main_content_type.endswith("+xml"):
-        return [types.TextContent(type="text", text=response.text)]
-
-    # Handle HTML responses - return as text
-    if main_content_type in ("text/html", "application/xhtml+xml"):
-        return [types.TextContent(type="text", text=response.text)]
-
-    # Handle plain text and other text/* content types
-    if main_content_type.startswith("text/"):
-        return [types.TextContent(type="text", text=response.text)]
-
-    # Handle other binary content types (audio, video, application/octet-stream, etc.)
-    # Encode as base64 and provide metadata for the LLM
-    if response.content:
-        # For binary content, encode as base64 and provide context
-        encoded_data = base64.standard_b64encode(response.content).decode("utf-8")
-        result_text = (
-            f"Binary response (Content-Type: {main_content_type or 'unknown'})\n"
-            f"Size: {len(response.content)} bytes\n"
-            f"Base64-encoded data:\n{encoded_data}"
-        )
-        return [types.TextContent(type="text", text=result_text)]
-
-    # Fallback: try to get text content, or return empty string for empty responses
-    try:
-        if response.text:
-            return [types.TextContent(type="text", text=response.text)]
-    except Exception:
-        pass
-
-    # Return empty string for empty responses (e.g., 204 No Content)
-    return [types.TextContent(type="text", text="")]
-
-
 class FastApiMCP:
     """
     Create an MCP server from a FastAPI app.
@@ -571,6 +482,124 @@ class FastApiMCP:
                 f"Unsupported transport: {transport}. Use mount_sse() or mount_http() instead."
             )
 
+    def _parse_content_type(self, content_type_header: Optional[str]) -> tuple[str, Optional[str]]:
+        """
+        Parse a Content-Type header into media type and charset.
+
+        Args:
+            content_type_header: The Content-Type header value (e.g., "application/json; charset=utf-8")
+
+        Returns:
+            A tuple of (media_type, charset). charset may be None.
+        """
+        if not content_type_header:
+            return "application/octet-stream", None
+
+        parts = content_type_header.split(";")
+        media_type = parts[0].strip().lower()
+
+        charset = None
+        for part in parts[1:]:
+            part = part.strip()
+            if part.lower().startswith("charset="):
+                charset = part[8:].strip().strip('"\'')
+                break
+
+        return media_type, charset
+
+    def _format_response_for_llm(
+        self,
+        response: httpx.Response,
+    ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+        """
+        Format an HTTP response based on its content type for optimal LLM consumption.
+
+        Args:
+            response: The httpx Response object
+
+        Returns:
+            A list of MCP content types appropriate for the response
+        """
+        content_type_header = response.headers.get("content-type")
+        media_type, charset = self._parse_content_type(content_type_header)
+
+        # Handle empty responses (e.g., 204 No Content)
+        if not response.content:
+            return [types.TextContent(type="text", text="")]
+
+        # Handle JSON responses
+        if media_type in ("application/json", "application/ld+json") or media_type.endswith("+json"):
+            try:
+                result = response.json()
+                result_text = json.dumps(result, indent=2, ensure_ascii=False)
+                return [types.TextContent(type="text", text=result_text)]
+            except (json.JSONDecodeError, ValueError):
+                # Fall through to text handling if JSON parsing fails
+                # ValueError can be raised by httpx for invalid JSON
+                pass
+
+        # Handle image responses - return as ImageContent with base64 encoding
+        if media_type.startswith("image/"):
+            image_data = base64.standard_b64encode(response.content).decode("ascii")
+            return [types.ImageContent(type="image", data=image_data, mimeType=media_type)]
+
+        # Handle XML responses - format for readability
+        if media_type in ("application/xml", "text/xml") or media_type.endswith("+xml"):
+            try:
+                # Try to pretty-print XML
+                import xml.dom.minidom
+
+                dom = xml.dom.minidom.parseString(response.content)
+                formatted_xml = dom.toprettyxml(indent="  ")
+                # Remove extra blank lines that toprettyxml adds
+                lines = [line for line in formatted_xml.split("\n") if line.strip()]
+                return [types.TextContent(type="text", text="\n".join(lines))]
+            except Exception:
+                # If XML parsing fails, return as plain text
+                return [types.TextContent(type="text", text=response.text)]
+
+        # Handle HTML responses - return with content type indicator
+        if media_type in ("text/html", "application/xhtml+xml"):
+            return [types.TextContent(type="text", text=f"[HTML Content]\n\n{response.text}")]
+
+        # Handle plain text and other text types
+        if media_type.startswith("text/"):
+            return [types.TextContent(type="text", text=response.text)]
+
+        # Handle binary responses based on content type and size
+        # Define size threshold for including base64 data (1MB)
+        MAX_BINARY_SIZE_FOR_BASE64 = 1 * 1024 * 1024  # 1MB
+
+        content_size = len(response.content)
+
+        # For very large binary content, return summary only
+        if content_size > MAX_BINARY_SIZE_FOR_BASE64:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=f"[Binary content: {media_type}, {content_size:,} bytes]\n\n"
+                    f"Content too large to include. Size: {content_size / 1024 / 1024:.2f} MB",
+                )
+            ]
+
+        # Try to decode as text in case content-type is misconfigured
+        try:
+            text = response.text
+            # Check if it looks like printable text (allowing common whitespace)
+            if text and (text.isprintable() or all(c.isprintable() or c in "\n\r\t" for c in text)):
+                return [types.TextContent(type="text", text=text)]
+        except (UnicodeDecodeError, ValueError):
+            pass
+
+        # For binary content within size limit, encode as base64 with metadata
+        binary_data = base64.standard_b64encode(response.content).decode("ascii")
+        return [
+            types.TextContent(
+                type="text",
+                text=f"[Binary content: {media_type}, {content_size:,} bytes]\n\nBase64 encoded data:\n{binary_data}",
+            )
+        ]
+
     async def _execute_api_tool(
         self,
         client: Annotated[httpx.AsyncClient, Doc("httpx client to use in API calls")],
@@ -633,20 +662,15 @@ class FastApiMCP:
             logger.debug(f"Making {method.upper()} request to {path}")
             response = await self._request(client, method, path, query, headers, body)
 
-            # Check for error status codes before processing response
+            # Check for HTTP errors before processing response
             # TODO: Use a raise_for_status() method on the response (it needs to also be implemented in the AsyncClientProtocol)
             if 400 <= response.status_code < 600:
-                # For error responses, try to get text for the error message
-                try:
-                    error_text = response.text
-                except Exception:
-                    error_text = str(response.content)
                 raise Exception(
-                    f"Error calling {tool_name}. Status code: {response.status_code}. Response: {error_text}"
+                    f"Error calling {tool_name}. Status code: {response.status_code}. Response: {response.text}"
                 )
 
-            # Format the response based on content type
-            return _format_response_for_llm(response)
+            # Format response based on content type for optimal LLM consumption
+            return self._format_response_for_llm(response)
 
         except Exception as e:
             logger.exception(f"Error calling {tool_name}")

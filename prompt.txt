@@ -1,4 +1,4 @@
-based on these instructions
+bbased on these instructions
 "
 Code Human Preferences CLI Edition
 

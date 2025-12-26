@@ -1,229 +1,185 @@
-# Glances Code Human Preferences - Prompt Collection
+# Zev CLI - Code Human Preferences Prompts
 
-This document contains 10 main prompts with 3 follow-up prompts each for the Glances system monitoring tool codebase. All prompts adhere to the Code Human Preferences CLI Edition instructions.
+This document contains 10 main prompts with 3 follow-up prompts each, designed for the Code Human Preferences CLI Edition project. All prompts adhere to the project guidelines for scope, complexity, and production-readiness iteration.
 
 ---
 
-## Prompt Set 1: Plugin Configuration Validation
+## Prompt Set 1: Command Validation and Sanitization
 
 ### Main Prompt (Turn 1)
-
-Add input validation for plugin configuration values loaded from the config file. When plugins read their configuration settings through the Config class methods (get_int_value, get_float_value, get_bool_value), there's currently no validation that the values fall within acceptable ranges. This can lead to runtime errors or unexpected behavior when users provide invalid configuration values. Implement validation that ensures configuration values are within reasonable bounds for each plugin, with clear error messages when invalid values are detected.
+The command history system currently saves all LLM responses without validating that the commands are actually executable or safe. Add validation logic that checks commands before they're saved to history to ensure they don't contain obvious syntax errors or malformed shell constructs.
 
 ### Follow-up Prompt (Turn 2)
-
-The validation logic you added is good, but I noticed a few issues. First, the error messages should specify which configuration file was loaded so users know where to fix the problem - you can get this from `config.loaded_config_file()`. Second, the validation for refresh rates should ensure they're not just positive, but also have a reasonable maximum (like 3600 seconds) to prevent users from accidentally setting extremely long intervals. Third, you're validating in each plugin's `__init__`, but this means invalid configs only get caught when that specific plugin loads - instead, add a centralized validation method in the Config class that validates all plugin configurations at once during startup.
+The validation logic you added catches some basic issues, but it's using a simple string matching approach that could produce false positives. The validator should be more sophisticated - consider checking for balanced quotes, proper pipe usage, and valid command structure. Also, the error messages when validation fails aren't specific enough to help users understand what went wrong. Make the validation more robust and provide actionable error messages that explain exactly what's invalid.
 
 ### Follow-up Prompt (Turn 3)
-
-Good progress. However, the centralized validation method needs refinement. You're iterating through all sections, but you should only validate sections that correspond to actual plugins - check against `stats.getPluginsList()` to avoid false errors for non-plugin sections like `[global]` or `[outputs]`. Also, the validation rules you hardcoded should be defined as class attributes or constants in each plugin class (like `CONFIG_VALIDATION_RULES`) so they're maintainable and self-documenting. Finally, make sure the validation happens early enough in the startup sequence that it prevents Glances from starting with an invalid config, rather than failing partway through initialization.
+I noticed the validation is happening after the LLM call in `save_options`, which means we're still making API calls even if the command would fail validation. The validation should happen earlier in the flow. Also, you've added validation tests, but they don't cover edge cases like commands with escaped characters, heredocs, or command substitution. Expand the test coverage to include these scenarios and ensure the validator handles them correctly without being overly restrictive.
 
 ### Follow-up Prompt (Turn 4)
-
-Almost there. The validation rules as class attributes are much better, but you need to handle the case where a plugin doesn't define validation rules - currently it would raise an AttributeError. Use `getattr()` with a default empty dict. Also, I see you're logging warnings for invalid values but still allowing Glances to start - this should be configurable behavior. Add a `--strict-config` flag that makes validation errors fatal, while the default behavior falls back to safe defaults with warnings. Finally, add unit tests in `test_core.py` that verify the validation catches common misconfigurations like negative refresh rates, percentages over 100, and invalid threshold orderings.
+The validation logic is working well, but there's a performance concern - you're running regex patterns on every command in a loop. For responses with multiple commands, this could be inefficient. Consider optimizing the validation to run patterns more efficiently. Additionally, the validation error messages are being printed directly to stdout, but they should integrate with the existing Rich console styling that the rest of the application uses. Make sure error output is consistent with the app's visual style.
 
 ---
 
-## Prompt Set 2: Export Module Error Recovery
+## Prompt Set 2: Command Execution Feedback Loop
 
 ### Main Prompt (Turn 1)
-
-Improve error handling and recovery in the export modules. Currently, if an export module (like InfluxDB, Prometheus, or Elasticsearch) encounters a connection error or export failure, it often silently fails or logs an error but doesn't attempt any recovery. Add a retry mechanism with exponential backoff for transient failures, and implement a circuit breaker pattern to temporarily disable exports that are consistently failing to prevent resource exhaustion and log spam.
+When users select a command from the options, it gets copied to clipboard but there's no mechanism to track whether the command actually worked when they run it. Add a feedback mechanism that allows users to optionally report whether a command succeeded or failed after they run it, and store this feedback alongside the command in history.
 
 ### Follow-up Prompt (Turn 2)
-
-The retry logic is a good start, but there are several issues. First, you're using `time.sleep()` for the backoff delays, which will block the entire Glances update cycle - this needs to be non-blocking. Track the next retry time and skip export attempts until that time is reached. Second, the circuit breaker state should be exposed through the plugin's stats so users can see which exports are currently failing in the UI. Third, you need to differentiate between retryable errors (network timeouts, temporary unavailability) and permanent errors (authentication failures, invalid configuration) - don't retry permanent errors.
+The feedback prompt you added appears immediately after copying to clipboard, but this is poor UX because users haven't actually run the command yet. The feedback should be collected the next time the user runs zev, asking about the previously copied command. Also, the feedback data structure in `CommandHistoryEntry` needs a proper schema - you're storing feedback as a simple boolean, but we need to capture more context like timestamp and optional user notes about what went wrong.
 
 ### Follow-up Prompt (Turn 3)
-
-Better, but the error classification logic is too simplistic. You're just checking exception types, but you need to inspect HTTP status codes for REST-based exports - 5xx errors are retryable, 4xx errors (except 429) are not. Also, the circuit breaker should have a half-open state where it periodically tests if the service has recovered, rather than staying permanently open after max failures. The state transitions need to be logged at INFO level so they appear in normal logs, not just DEBUG. Finally, add configuration options to `glances.conf` for retry behavior: `max_retries`, `initial_backoff_seconds`, and `circuit_breaker_threshold`.
+Good progress on the deferred feedback collection. However, I see you're storing the "pending feedback" command in a separate file, which creates synchronization issues if the user runs multiple zev commands in succession. Instead, track pending feedback within the existing history file structure. Also, the feedback prompt is showing even when users run `zev --setup` or `zev --help`, which is annoying. The feedback prompt should only appear for actual command queries, not for utility flags.
 
 ### Follow-up Prompt (Turn 4)
-
-Good improvements. However, you need to add proper cleanup in the export modules' `exit()` methods - if there are pending retries when Glances shuts down, they should be cancelled gracefully. The circuit breaker state should also be reset on Glances restart, not persisted. For the half-open state testing, make sure you're not testing too frequently - implement a minimum time in open state before attempting half-open (like 60 seconds). Also, the stats you're exposing should include not just current state, but also metrics like total_export_attempts, failed_exports, and last_success_timestamp. Add tests that verify the retry logic and circuit breaker state transitions.
+The feedback collection is working, but there's no way for users to view or leverage this feedback data. Add a `--stats` flag that shows aggregated statistics about command success rates, most frequently used commands, and commands with the highest failure rates. The statistics should be displayed using Rich tables for good readability. Also ensure that the feedback data is properly anonymized if we ever add export functionality - don't include the actual prompts or commands in exported stats, only the metadata.
 
 ---
 
-## Prompt Set 3: Process Filtering Performance
+## Prompt Set 3: Multi-Command Workflow Support
 
 ### Main Prompt (Turn 1)
-
-Optimize the process filtering performance in the processlist plugin. When users apply filters using the filter feature (GlancesFilter), the current implementation re-compiles regex patterns on every update cycle and applies them to every process. For systems with hundreds or thousands of processes, this creates unnecessary CPU overhead. Implement filter pattern caching and optimize the filtering algorithm to reduce the performance impact.
+Users sometimes need to run a sequence of related commands to accomplish a task. Add support for the LLM to return multi-step workflows where commands should be executed in sequence, with each step having dependencies on previous steps completing successfully.
 
 ### Follow-up Prompt (Turn 2)
-
-The regex caching helps, but you're still iterating through all processes for every filter check. Instead, you should compile all filter patterns into a single combined regex where possible, or at minimum short-circuit the evaluation when a process matches any filter. Also, I notice you're caching based on the filter string, but you're not invalidating the cache when the filter changes - you need to detect filter changes and clear the cache. The cache should also have a maximum size to prevent memory leaks if filters are changed frequently.
+The workflow structure you've added to the response schema is good, but the UI for displaying multi-step workflows is confusing. When showing workflow steps, you're displaying them as separate command options, which makes it unclear that they're meant to be run in sequence. Design a better visual representation that clearly shows the step numbers, dependencies, and the overall workflow structure. Use Rich's tree or panel components to make the relationships clear.
 
 ### Follow-up Prompt (Turn 3)
-
-Good progress on the combined regex approach. However, you need to handle the case where filter_key is specified (like `username:nicolargo`) - these can't be combined into a single regex since they apply to different fields. Maintain separate code paths: one for simple name-based filters that can be combined, and one for key-specific filters. Also, the performance improvement should be measurable - add timing instrumentation that tracks how long filtering takes, and expose this in the debug output. Make sure the optimization doesn't change the filtering behavior - add tests that verify the same processes are filtered with and without the optimization.
+The workflow display is much better, but there's a critical issue with how you're handling workflow execution. When a user selects a workflow, you're copying all commands to clipboard as a single multi-line string, but this doesn't work well with most terminal workflows. Instead, implement an interactive workflow executor that runs each step, shows the output, and asks for confirmation before proceeding to the next step. Users should be able to skip steps or abort the workflow at any point.
 
 ### Follow-up Prompt (Turn 4)
-
-The dual code path approach is working well. However, you need to add a benchmark to verify the performance improvement. Create a test in `test_perf.py` that generates a large mock process list (1000+ processes) and measures filtering time with various filter patterns. The optimized version should be at least 50% faster than the original. Also, I noticed you're not handling the case where regex compilation fails due to invalid user input - wrap the compilation in try-except and fall back to literal string matching if the regex is invalid. Finally, document the optimization in the code comments, explaining why the combined regex approach is faster.
+The interactive workflow executor is working, but it's not handling errors properly. If a command in the middle of a workflow fails (non-zero exit code), the executor should pause and ask the user whether to continue, retry, or abort. Also, the workflow execution isn't being saved to history correctly - you're only saving the final state, but we should save the entire execution trace including which steps succeeded, failed, or were skipped. This will help users debug failed workflows later.
 
 ---
 
-## Prompt Set 4: Memory History Optimization
+## Prompt Set 4: Context-Aware Command Suggestions
 
 ### Main Prompt (Turn 1)
-
-Reduce memory consumption of the stats history feature. Currently, each plugin that has history enabled stores raw timestamp-value tuples in memory, and for systems running Glances for extended periods, this can consume significant memory. Implement a more memory-efficient history storage mechanism that uses downsampling for older data points while maintaining high resolution for recent data.
+The current implementation sends basic OS and shell information as context, but it doesn't include information about the current directory contents or git repository state. Enhance the context gathering to include the current directory path, whether it's a git repo, and if so, the current branch and status summary.
 
 ### Follow-up Prompt (Turn 2)
-
-The downsampling approach is good, but you're applying it uniformly across all time ranges. Instead, implement a tiered approach: keep full resolution for the last hour, downsample to 1-minute averages for 1-24 hours ago, and downsample to 5-minute averages for older data. Also, you're creating new lists during downsampling which causes memory spikes - implement in-place downsampling that modifies the existing history structure. The downsampling should preserve min/max/avg values, not just averages, so users can still see peak values in historical data.
+The git context you're gathering is helpful, but you're calling `git status` synchronously in `get_env_context`, which blocks the UI if the git command is slow or hangs. Make the context gathering async or add a timeout so slow git operations don't freeze the application. Also, you're including the full git status output in the context, which can be very long for repos with many changes. Summarize the git status to just the essential information: branch name, number of modified files, and whether there are uncommitted changes.
 
 ### Follow-up Prompt (Turn 3)
-
-The tiered downsampling is much better, but there's an issue with the timestamp handling. When you downsample multiple points into one, you're using the first timestamp, but you should use the middle timestamp of the interval to accurately represent the time period. Also, the downsampling is happening synchronously during the update cycle - this could cause UI lag. Move the downsampling to a background thread that runs periodically (every 5 minutes) rather than on every update. Make sure the background thread properly handles the case where Glances is shutting down.
+Good work on the timeout handling. However, I noticed you're gathering git context even when the user's query has nothing to do with git (like "show disk usage"). This wastes time and adds unnecessary tokens to the LLM prompt. Implement smart context gathering that only includes git information when the query is likely git-related. You can use simple keyword matching on the user's query to determine relevance. Also, the directory path you're including shows the full absolute path, which could leak sensitive information in the prompt. Sanitize paths to show relative paths or just the directory name when appropriate.
 
 ### Follow-up Prompt (Turn 4)
-
-The background downsampling thread is working, but you need to add proper thread synchronization. The history data structure is being accessed by both the main update thread and the downsampling thread without locks, which could cause race conditions. Use `threading.Lock()` to protect history modifications. Also, add a configuration option `history_size` to `glances.conf` that lets users control how much history to keep - default to 24 hours but allow users to increase or decrease based on their needs. Add memory profiling tests that verify the new implementation uses significantly less memory than the original for long-running instances.
+The context relevance detection is working well, but there's an edge case: when users run `zev` with no arguments (interactive mode), you can't determine relevance until after they enter their query. Currently, you're gathering all context upfront in `run_no_prompt`, which means you're still gathering unnecessary context. Refactor the context gathering to happen after the user enters their query in interactive mode. Also, add unit tests for the context relevance detection logic to ensure it correctly identifies git-related queries without false negatives.
 
 ---
 
-## Prompt Set 5: RESTful API Response Caching
+## Prompt Set 5: Command Explanation and Learning Mode
 
 ### Main Prompt (Turn 1)
-
-Add response caching to the RESTful API to reduce CPU usage when multiple clients are polling the same endpoints. Currently, every API request triggers a full stats serialization to JSON, even if the stats haven't changed since the last request. Implement a caching layer that serves cached responses when stats haven't been updated, with proper cache invalidation when stats are refreshed.
+Add a `--explain` flag that works with command queries to provide detailed explanations of what each suggested command does, breaking down the flags and arguments in an educational way. This should help users learn shell commands rather than just copying them blindly.
 
 ### Follow-up Prompt (Turn 2)
-
-The basic caching works, but you're caching the entire response body as a string, which still requires JSON serialization on the first request after each update. Instead, cache the Python dict/list objects and only serialize to JSON when needed - this allows you to also support other formats (like MessagePack) without re-computing the data. Also, you're using a simple dict for the cache, but you need to add cache size limits and implement an LRU eviction policy to prevent unbounded memory growth if clients request many different endpoint combinations.
+The explanation feature is helpful, but you're generating explanations by making a second LLM call after the initial command generation, which doubles the API cost and latency. Instead, modify the initial prompt to request detailed explanations alongside the commands when `--explain` mode is active. Update the `OptionsResponse` schema to include an optional detailed explanation field that's only populated in explain mode. Also, the explanations are being displayed as plain text, but they should use Rich formatting with syntax highlighting for command components.
 
 ### Follow-up Prompt (Turn 3)
-
-Good improvement with the object-level caching. However, the cache invalidation is too aggressive - you're invalidating the entire cache on every stats update, but some endpoints (like `/api/3/system`) return data that changes very infrequently. Implement per-endpoint cache invalidation based on which plugins were actually updated. Also, add ETags to the HTTP responses so clients can use conditional requests (If-None-Match) to avoid transferring data that hasn't changed. The ETag should be a hash of the cached response data.
+The single-call approach is much better for performance. However, the explanations are sometimes too verbose and include information that's obvious to anyone familiar with basic shell usage. The prompt should instruct the LLM to focus explanations on non-obvious aspects, advanced flags, and potential gotchas. Also, when displaying explanations, you're showing them all at once before the user selects a command, which clutters the UI. Instead, show the brief explanation in the selection menu, and only display the detailed explanation after the user selects a command.
 
 ### Follow-up Prompt (Turn 4)
-
-The per-endpoint invalidation and ETags are working well. However, you need to add cache statistics that are exposed through a `/api/3/cache/stats` endpoint showing hit rate, miss rate, and current cache size - this helps users understand if caching is effective. Also, the cache should respect the `Cache-Control` headers - add support for `no-cache` and `max-age` directives. Make sure the caching doesn't break the existing API contract - add tests that verify all endpoints return the same data with and without caching enabled. Finally, add a `--disable-api-cache` command-line flag for debugging purposes.
+Much better UX flow. One issue: the detailed explanations don't include examples of the command's output or what the user should expect to see when they run it. Enhance the explanation prompt to request example outputs. Also, I noticed that in explain mode, the dangerous command warnings are being shown twice - once in the selection menu and again in the detailed explanation. Deduplicate this information. Finally, add a configuration option to make explain mode the default for users who want it always on, stored in the `.zevrc` file.
 
 ---
 
-## Prompt Set 6: Plugin Dependency Resolution
+## Prompt Set 6: Command History Search and Filtering
 
 ### Main Prompt (Turn 1)
-
-Improve the plugin dependency resolution system. Currently, the DAG (Directed Acyclic Graph) in `glances/plugins/plugin/dag.py` defines plugin dependencies, but the dependency resolution happens at import time and doesn't handle circular dependencies gracefully. Refactor the dependency system to detect circular dependencies early and provide clear error messages, and ensure plugins are initialized in the correct dependency order.
+The `--recent` flag shows command history, but there's no way to search or filter through it. Add search functionality that allows users to filter history by keywords in the original query or in the returned commands.
 
 ### Follow-up Prompt (Turn 2)
-
-The circular dependency detection is good, but the error message just lists the plugins involved - it should show the actual dependency chain that creates the cycle (e.g., "A depends on B depends on C depends on A"). Also, you're doing topological sort for initialization order, but you're not handling the case where a plugin's dependency is disabled by the user - the dependent plugin should either auto-disable with a warning, or the dependency should be marked as optional vs required. Add a way to specify optional dependencies in the DAG.
+The search functionality works, but you're implementing it as a separate `--search <term>` flag, which means users can't combine it with `--recent`. The UX would be better if search was integrated into the history display itself - when users select `--recent`, they should be presented with a search box at the top of the history list that filters results as they type. Use questionary's autocomplete or filtering features to make this interactive. Also, the search is case-sensitive, which is unnecessarily restrictive for this use case.
 
 ### Follow-up Prompt (Turn 3)
-
-Better error messages and optional dependencies are good improvements. However, the initialization order is still determined globally at startup, but some plugins support dynamic enable/disable at runtime. When a plugin is disabled at runtime, you need to check if any enabled plugins depend on it and either disable them too or handle the missing dependency gracefully. Also, the dependency information should be exposed in the plugin's metadata so the UI can show users why a plugin is disabled (e.g., "Disabled: required dependency 'processcount' is not available").
+The interactive search is much better. However, the search only matches exact substrings, which means searching for "git commit" won't find "git commit -m message". Implement fuzzy matching or tokenized search where each word in the search query is matched independently. Also, you're loading the entire history file into memory and then filtering it, which could be slow for users with large history files. Consider implementing pagination or lazy loading for the history display.
 
 ### Follow-up Prompt (Turn 4)
-
-The runtime dependency handling is working, but you need to add validation that the DAG structure itself is correct - currently if someone adds a dependency to a non-existent plugin, it silently fails. Add a validation function that runs during development (perhaps in the test suite) that verifies all dependencies reference real plugins. Also, the dependency resolution should be documented - add a section to the developer documentation explaining how to add dependencies when creating new plugins. Finally, add tests that verify the initialization order is correct for various dependency scenarios, including optional dependencies and disabled plugins.
+The fuzzy search is working well. One issue: when users search and select a historical command, it shows the options from that historical query, but there's no indication of when that query was originally made. Add timestamps to `CommandHistoryEntry` and display them in the history list so users can see how old each entry is. Also, the search results aren't sorted in any meaningful way - they should be sorted by relevance score (based on match quality) and then by recency as a tiebreaker. Implement proper result ranking.
 
 ---
 
-## Prompt Set 7: SNMP Plugin Timeout Handling
+## Prompt Set 7: Provider-Specific Error Handling
 
 ### Main Prompt (Turn 1)
-
-Improve timeout handling in the SNMP plugin. When monitoring remote systems via SNMP, network latency or unresponsive devices can cause the SNMP queries to hang, blocking the entire Glances update cycle. Implement proper timeout handling with configurable timeout values, and ensure that slow SNMP responses don't block other plugins from updating.
+Different LLM providers have different error conditions and rate limits, but the current error handling is inconsistent across providers. Standardize error handling across all providers (OpenAI, Gemini, Ollama, Azure) to provide consistent, helpful error messages and implement retry logic with exponential backoff for transient failures.
 
 ### Follow-up Prompt (Turn 2)
-
-The timeout configuration is good, but you're still making SNMP calls synchronously in the main update thread. Even with timeouts, this means a slow SNMP device can delay the entire UI update. Move the SNMP queries to a background thread or use async I/O so they don't block the main update loop. The plugin should return the last known good values while waiting for the SNMP query to complete. Also, you need to handle the case where multiple SNMP OIDs are queried - they should be batched into a single SNMP request where possible to reduce network round-trips.
+The retry logic you added is using a simple fixed delay between retries, which isn't ideal for rate limit errors that often include a "retry-after" header. Implement proper exponential backoff with jitter, and respect retry-after headers when providers send them. Also, you're retrying all errors indiscriminately, but some errors like authentication failures shouldn't be retried. Categorize errors into retryable and non-retryable, and only retry the former.
 
 ### Follow-up Prompt (Turn 3)
-
-The async SNMP queries are working, but there's a race condition - if the SNMP query completes while the main thread is reading the stats, you could get inconsistent data (some old values, some new). Use proper locking or atomic updates to ensure stats are updated atomically. Also, the batched OID requests are good, but you need to handle partial failures - if some OIDs succeed and others timeout, you should update the successful ones rather than discarding all results. Add a status indicator to the stats showing the age of the data and whether the last update succeeded.
+Good progress on the retry categorization. However, the retry logic is duplicated across all four provider classes. Extract the retry logic into a shared decorator or base class method to eliminate duplication. Also, the error messages for Gemini provider are less helpful than the other providers - when a Gemini API call fails, you're just printing the HTTP error code, but you should parse the error response JSON and extract the actual error message like you do for OpenAI. Make error handling consistent across all providers.
 
 ### Follow-up Prompt (Turn 4)
-
-Good improvements on the atomic updates and partial failure handling. However, you need to add connection pooling for SNMP sessions - currently you're creating a new SNMP session for each query, which is inefficient. Reuse sessions across updates and only recreate them if they fail. Also, add SNMP v3 authentication support with proper credential handling - credentials should never be logged even in debug mode. The timeout values should be adaptive - if a device consistently responds quickly, reduce the timeout; if it's consistently slow, increase it within configured bounds. Add tests that simulate slow and unresponsive SNMP devices to verify the timeout handling works correctly.
+The shared retry logic is much cleaner. One remaining issue: when retries are happening, there's no user feedback - the spinner just keeps spinning and users don't know if the app is frozen or retrying. Add retry progress indicators that inform users when retries are occurring and how many attempts remain. Use Rich's status updates to show messages like "Retrying... (attempt 2/3)". Also, add configuration options to `.zevrc` for max retry attempts and timeout values so power users can customize the retry behavior.
 
 ---
 
-## Prompt Set 8: Docker Container Metrics Enhancement
+## Prompt Set 8: Command Safety Analysis Enhancement
 
 ### Main Prompt (Turn 1)
-
-Enhance the Docker container monitoring in the containers plugin to include network I/O statistics per container. Currently, the plugin shows CPU, memory, and disk I/O, but network statistics are missing even though Docker exposes this data through its API. Add per-container network bytes sent/received and packet counts to the container stats.
+The current dangerous command detection relies entirely on the LLM marking commands as dangerous, but this isn't reliable. Implement client-side safety analysis that checks commands against a set of known dangerous patterns (like `rm -rf`, `dd`, `mkfs`, etc.) and warns users even if the LLM didn't flag the command as dangerous.
 
 ### Follow-up Prompt (Turn 2)
-
-The network stats are being collected, but you're making a separate API call for each container's network stats, which is inefficient when monitoring many containers. The Docker API supports getting stats for all containers in a single streaming connection - refactor to use the streaming stats API. Also, the network stats you're showing are cumulative counters, but users typically want to see rates (bytes/sec). Calculate and display the rate by comparing with the previous update's values, similar to how disk I/O rates are calculated.
+The pattern-based detection is working, but it's too aggressive - it's flagging commands like `rm -rf node_modules` which, while technically dangerous, are common and usually intentional. The safety analysis needs to be context-aware. For example, `rm -rf` in a project directory with `node_modules` is less concerning than `rm -rf /`. Implement heuristics that consider the command's target paths and context. Also, you're using simple string matching which can be bypassed with command substitution or variables. Make the pattern matching more robust.
 
 ### Follow-up Prompt (Turn 3)
-
-The streaming API and rate calculations are good, but there's an issue with containers that have multiple network interfaces - you're only showing stats for the first interface. Sum the stats across all interfaces to show total container network usage, but also provide a way to see per-interface breakdown in the detailed view. Also, the rate calculation fails on the first update because there's no previous value - handle this gracefully by showing 0 or N/A for the first update. Add proper error handling for containers that don't have network stats available (like containers in host network mode).
+The context-aware analysis is better, but there's a false negative issue: commands that use shell variables or command substitution aren't being analyzed properly because you're checking the literal command string. For example, `rm -rf $DIR` isn't flagged even if `$DIR` could be dangerous. While you can't evaluate variables at analysis time, you should flag commands that use variables in dangerous contexts and warn users to verify the variable values. Also, the dangerous command warnings are shown in red text, but they should be more prominent - consider using Rich panels or boxes to make them stand out more.
 
 ### Follow-up Prompt (Turn 4)
-
-Good handling of multi-interface containers and edge cases. However, the network stats should respect the same hide/show configuration as other container stats - check the `hide` configuration option. Also, add unit conversion for network rates - show bytes/sec for low rates, KB/s for medium, MB/s for high, using the same `auto_unit()` function used elsewhere in Glances. The stats should be included in the JSON export and RESTful API responses. Finally, add tests that verify network stats are correctly calculated for containers with different network configurations (bridge, host, none).
+The variable detection is working well. However, the safety analysis is only running on commands that the LLM returns, not on commands from history when users use `--recent`. If a user selects a historical command that's now recognized as dangerous (maybe the pattern list was updated), they should still see the warning. Apply safety analysis consistently to all commands regardless of source. Also, add a `--safety-level` configuration option (low/medium/high) that controls how aggressive the safety checking is, and store this preference in `.zevrc`.
 
 ---
 
-## Prompt Set 9: Configuration File Hot Reload
+## Prompt Set 9: Response Caching and Offline Mode
 
 ### Main Prompt (Turn 1)
-
-Add support for hot-reloading the configuration file without restarting Glances. Currently, if users modify `glances.conf`, they need to restart Glances for changes to take effect. Implement a file watcher that detects configuration file changes and reloads the configuration, applying changes to plugins that support runtime reconfiguration.
+Users often ask similar or identical queries multiple times, which wastes API calls and costs money. Implement response caching that stores LLM responses locally and returns cached results for identical queries instead of making redundant API calls.
 
 ### Follow-up Prompt (Turn 2)
-
-The file watching works, but you're reloading the entire configuration and reinitializing all plugins, which causes a noticeable pause in the UI and resets all stats history. Instead, implement selective reloading - compare the old and new configuration to determine which plugins are affected, and only reload those plugins. Also, some configuration changes can't be applied at runtime (like changing the server port) - detect these and log a warning that a restart is required. The reload should be atomic - if the new config file has syntax errors, keep using the old config rather than leaving Glances in a broken state.
+The caching is working for exact query matches, but it's too strict - "show disk usage" and "show disk usage?" are treated as different queries even though they're semantically identical. Normalize queries before caching by stripping trailing punctuation, converting to lowercase, and removing extra whitespace. Also, the cache has no expiration policy, which means it will grow indefinitely. Implement cache expiration based on age (e.g., cache entries older than 30 days are automatically removed) and size limits (e.g., keep only the 1000 most recent entries).
 
 ### Follow-up Prompt (Turn 3)
-
-The selective reloading is much better, but you need to handle the case where the config file is being edited - text editors often write to a temporary file and then rename it, which can trigger multiple file system events. Debounce the reload events so you only reload once after the file has stabilized (wait 1 second after the last change event). Also, the configuration validation you added earlier should run before applying the new config - if validation fails, keep the old config and show an error notification in the UI. Add a manual reload command (maybe a keyboard shortcut in the TUI) so users can trigger reload without modifying the file.
+The cache normalization and expiration are working well. However, the cache is stored in a separate file from history, which creates data duplication - the same command responses are stored in both `.zevhistory` and the cache file. Consolidate these by using the history file as the cache source. When a query matches a recent history entry, return that result instead of making a new API call. Also, you're not providing any feedback to users when a cached result is returned - they should know they're seeing a cached response. Add a subtle indicator like "(cached)" in the status message.
 
 ### Follow-up Prompt (Turn 4)
-
-The debouncing and validation are working well. However, you need to add proper notification to users when a reload happens - in the TUI, show a brief message at the top of the screen; in the web UI, send a notification; in the API, include a `config_reload_timestamp` field. Also, the file watcher should handle the case where the config file is deleted and recreated - currently it loses the watch. Use a directory watcher instead of a file watcher to handle this. Add a `--disable-config-reload` flag for users who don't want this feature. Finally, add tests that verify configuration changes are correctly applied without restarting Glances, and that invalid configs are rejected.
+Good consolidation of cache and history. One issue: the cache matching is still based on exact query text matching, which misses semantically similar queries like "list python processes" vs "show running python processes". While implementing full semantic similarity is complex, you could at least implement simple synonym handling for common command verbs (list/show/display, find/search/locate, etc.). Also, add a `--no-cache` flag that forces a fresh API call even if a cached result exists, for cases where users want the most up-to-date response.
 
 ---
 
-## Prompt Set 10: Alert Action Script Templating
+## Prompt Set 10: Configuration Validation and Migration
 
 ### Main Prompt (Turn 1)
-
-Enhance the alert action script feature to support more flexible templating. Currently, action scripts receive a limited set of variables, and the templating is done with simple string replacement. Extend the templating system to use Jinja2 (which is already a dependency) and provide access to the full plugin stats context, not just the specific field that triggered the alert.
+The configuration system currently doesn't validate the config file format or values. If users manually edit `.zevrc` and introduce errors, the app fails with cryptic error messages. Add configuration validation that checks for required fields, valid provider names, and properly formatted API keys when the config is loaded.
 
 ### Follow-up Prompt (Turn 2)
-
-The Jinja2 templating is working, but you're passing the entire stats object to the template, which could expose sensitive information if users share their action scripts. Add a whitelist of safe fields that can be accessed in templates, and document which fields are available for each plugin. Also, the template rendering errors are being logged but the action script still executes with empty variables - instead, skip executing the action if template rendering fails, and make the error more visible (maybe add it to the alerts list). Add helper functions to the template context like `format_bytes()` and `format_time()` for common formatting needs.
+The validation you added runs when the config is loaded, but it's using assertions which cause the app to crash with stack traces when validation fails. Instead, validation errors should be caught and presented to users with helpful error messages that explain what's wrong and how to fix it. For example, if the API key format is invalid, suggest running `zev --setup` to reconfigure. Also, you're validating all provider configs even though only one provider is active - only validate the configuration for the currently selected provider.
 
 ### Follow-up Prompt (Turn 3)
-
-The field whitelist and helper functions are good additions. However, you need to add sandboxing to the Jinja2 environment to prevent users from executing arbitrary Python code in templates - use `jinja2.sandbox.SandboxedEnvironment` instead of the regular `Environment`. Also, the template rendering should have a timeout to prevent infinite loops or very slow templates from blocking the alert system. Add template validation when the config is loaded - try to render each template with dummy data and report errors early rather than waiting for an alert to trigger.
+Much better error handling. However, there's no validation for the API keys themselves - you're just checking that they're non-empty strings. Different providers have different API key formats (OpenAI keys start with "sk-", Gemini keys have specific lengths, etc.). Add format validation for each provider's API keys to catch obvious errors before making API calls. Also, when validation fails, you're suggesting users run `--setup`, but if they just made a typo in the config file, it would be faster to tell them exactly which line is wrong so they can fix it manually.
 
 ### Follow-up Prompt (Turn 4)
-
-The sandboxing and validation are important security improvements. However, you need to add better debugging support for action templates - when a template fails to render, the error message should show the template source and the line where the error occurred. Also, add a dry-run mode for testing action scripts (maybe a `--test-actions` flag) that triggers all configured actions with dummy alert data so users can verify their templates work correctly. The template context should include not just current values but also historical context (like previous value, trend direction). Finally, add examples of useful action templates to the documentation, like sending formatted Slack messages or creating detailed email alerts.
+The API key format validation is helpful. One more issue: when the config file format changes between versions (like when new providers are added), users with old config files might be missing required fields. Implement configuration migration that automatically updates old config files to the new format, adding default values for new fields. Also, add a `--validate-config` flag that checks the configuration without running a query, so users can verify their config is valid after manual edits. The validation output should clearly indicate what's correct and what needs fixing.
 
 ---
 
-## Summary
+## Notes on Prompt Design
 
-These 10 prompt sets cover diverse aspects of the Glances codebase:
+All prompts in this document follow these principles:
 
-1. **Plugin Configuration Validation** - Input validation and error handling
-2. **Export Module Error Recovery** - Resilience and retry logic
-3. **Process Filtering Performance** - Optimization and caching
-4. **Memory History Optimization** - Memory management and data structures
-5. **RESTful API Response Caching** - Web API performance
-6. **Plugin Dependency Resolution** - Architecture and initialization
-7. **SNMP Plugin Timeout Handling** - Network I/O and async operations
-8. **Docker Container Metrics Enhancement** - Feature addition and API integration
-9. **Configuration File Hot Reload** - File system monitoring and dynamic updates
-10. **Alert Action Script Templating** - Templating and security
+1. **Appropriate Scope**: Each main prompt defines a single, atomic feature that could reasonably be implemented in one PR
+2. **User Perspective**: Prompts describe what needs to be done without prescribing implementation details
+3. **Reasonable Challenge**: None of the prompts should be completable in a single turn - they require iteration
+4. **No Explicit PR-Ready Instructions**: Prompts don't tell the model to make changes "production ready"
+5. **Progressive Refinement**: Follow-up prompts provide specific, expert-level feedback on the implementation
+6. **No Scope Creep**: Follow-ups stay within the original scope and guide toward production quality
+7. **Specific and Prescriptive**: Follow-ups demonstrate expertise by pointing out specific issues and suggesting concrete improvements
+8. **Unique to Context**: Follow-ups address issues specific to the implementation, not generic advice
 
-Each prompt set:
-
-- Defines a clear, realistic scope appropriate for a single PR
-- Avoids prescribing implementation details in the first turn
-- Provides progressively more specific technical guidance in follow-ups
-- Stays within the original scope without scope creep
-- Demonstrates expertise through specific, actionable feedback
-- Requires production-ready code with proper error handling, testing, and documentation
+These prompts are designed to test the model's ability to:
+- Implement features correctly and completely
+- Handle edge cases and error conditions
+- Write clean, maintainable code matching the codebase style
+- Add appropriate tests and documentation
+- Self-review and iterate toward production quality

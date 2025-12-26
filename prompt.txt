@@ -1,494 +1,229 @@
-bbased on these instructions
-"
-Code Human Preferences CLI Edition
-
-Claude Code CLI Binary Download / CLI Install Instructions / Submission Form / Additional Tips
-Before You Begin
-Please take the time to read these instructions in full, and refer back to them often, as needed. It is essential not to gloss over them, and that you understand and adhere to the specific constraints that are outlined.
-Prerequisites Required
-To participate in this project, you will need to have proficiency with Git, understand what production-ready code looks like, and have competence in your assigned programming language.
-
-You should also have read the setup instructions for installing and tasking with the custom Claude Code CLI tool. It should be installed on your machine.
-Overall Aim
-For this task, you will select a codebase that is a git repository, and ask the model to perform a single task in that codebase. Your goal is to, over multiple turns, iterate on the model’s solution for that task until it reaches a “production-ready” state (defined later in these instructions). In addition to iterating on the model’s solution, you should be iterating on the model’s workflow with it to ensure it is working like a real engineer - meaning ensuring the model is reviewing the code it wrote, validating code against task requirements, committing regularly, etc.
-
-Quick Setup Check:
-Our current setup is the following, please ensure you’re using the following setup 
-Claude Code CLI version: v2.0.70
-Interface code:: cc_agentic_coding
-
-UPDATE Dec 14th 2025 - Proper usage of the N/A Rating
-If two models produce equivalent, or near-equivalent, sets of changes, you should use middle-ratings for all applicable categories. Only use the N/A rating if the respective grading axis truly does not apply to what the model response produces in content on the relevant turn.
-
-UPDATE Dec 7th 2025 - Common Things to Avoid
-Make sure the claude-hfi binary is not included in the codebase itself. You should be moving the binary out of Downloads to the appropriate folder, and adding the executable to the PATH in your terminal rc file. ❗
-Please refrain from including your name in the tar upload. As per the instructions, we want the name of the codebase. We don’t want personally identifying information included (PII).
-Make sure that follow-up turns do not introduce scope creep.
-
-Select a codebase
-When using the Claude CLI tool, you may choose to source a codebase yourself or choose from one of the pre-approved codebases. If you choose to source a codebase on your own the chosen codebase must adhere to the following criteria:
-The codebase must be a git repo.
-The codebase must be primarily written in your assigned programming language. If you are not assigned a language, stick to your area of expertise. We’re currently interested more in Python, Javascript, Typescript, and Rust.
-The codebase must be high quality. It should not be a codebase that you vibe-coded. Ideally, the codebase has multiple contributors, and some activity or recognition on Github. The code represents professional-level work.
-The codebase must be open license.
-The codebase must have clear, working instructions on how to build and run it. You have succeeded in completing these setup steps locally successfully.
-Keep these additional points in mind too:
-The codebase should almost always have existing testing practices of some kind.
-Aim for diversity when selecting codebases. Some should be libraries, some should be applications. Some should be simple and small, some should be large and complex (and everything in between)
-Codebases should be a mix of libraries, applications, SDKs, etc
-You can use a codebase from a previous interaction with the model. We encourage you to reuse codebases you have deep knowledge of. However, make sure your prompts are diverse. You may reuse the same codebase up to 10 times.
-Codebases should often but not always include common developer productivity tools like linters and formatters.
-Codebases may sometimes have SKILL.md files, or CLAUDE.md files. Take care to make sure you understand the contents of these files as Claude Code may behave in ways that don’t at first glance make sense, but do in lieu of that added context. If a codebase did not already have these files, do not go out of your way to introduce them.
-Codebases may have CONTRIBUTING.md or other developer documentation that communicates opinions about contributing practices. It’s wise to understand the contents of these files too as they can inform how Claude Code should engage with common development patterns.
-Added December 8th: The selected repo should generally AVOID making extensive usage of network ports or require active internet access, as these resources are ultimately shared between the environments.
-Prepare the Codebase
-If you have a codebase that meets all criteria, but lacks clear setup instructions you can still use the codebase provided you add and commit those instructions. Test to make sure your own setup instructions work. These instructions should cover how to build and run the repo successfully. When you upload the tar of the codebase, make sure that commit is also included. See below for details on submission steps.
-In addition, when you begin your conversation with Claude Code, please make sure your current git worktree is clean. There should be no unstaged or staged changes active.
-Familiarize yourself with the codebase
-Take time to understand the codebase’s purpose, features, and history. You should be comfortable reviewing any code changes made to the codebase and have the ability to ideate on your own plausible, useful, and realistic ideas for new features, refactors, or improvements.
-Start the Conversation with Claude Code
-Launch Claude Code using either the vscode or tmux flag option. You will be prompted for an interface code. Enter the following code: cc_agentic_coding.
-First Turn
-Come up with a well-scoped prompt for your first turn. It’s important that you craft your first-turn prompt to meet these criteria:
-The scope should be appropriately sized for a single PR. Avoid prompts that would require very large changes that normally entail multiple PRs. Lean towards atomic change requests.
-The scope should be specified from the perspective of the user. You want to avoid spelling out implementation details, or prescribing how the model should accomplish its task. Sometimes the user may be a developer. This is particularly common with refactor prompts. In these cases consider what technical details about the code need to be clarified only to define what the task is rather than how to do the task.
-The scope should be reasonably challenging such that the model does not arrive at production quality code changes in 1 turn.
-The first turn prompt should not instruct the model explicitly to “make the code changes PR ready”. We want to provide training data that can teach the model to do this by default unprompted, so including an explicit instruction defeats the point.
-To illustrate, consider these examples:
-Good
-Bad
-Add resume logic to the train.py script so that long-running training runs can continue from previous saved checkpoints. (Reasonably sized, atomic change request)
-Add checkpointing capabilities to model training runs, and provide a dashboard experience viewable with live streamed-in data feed. I should be able to compare different ablation runs easily, and ergonomically pause/resume experiments through the dashboard or cli. (Too large, not atomic either)
-Add a boid simulation that runs smoothly in the browser with animating tails and configurable settings. Settings should have good defaults and ranges that allow users to easily experience the full range of interesting emergent behaviors, though make sure constraints are in place to avoid running into glitchiness or lag. (Only defines what the scope is without prescribing how)
-Add a Boid simulation sandbox in javascript using a canvas element 800 by 600 px. Each boid should have position and velocity using cartesian coordinates. Make sure the sandbox is configurable with live feedback for flocking rules visual range, separation, cohesion, and alignment, defaulting to 75, 0.05, 0.005, and 0.05 respectively. Cap the number of boids to 100 operating at 60fps requestAnimationFrame. (Specifies not just what the scope is, but also how to implement it effectively)
-We learned that POSIX filesystems have reliable guarantees in file move operation mtimes. The time doesn’t change between the reference to the prev and current inode, so we were able to use this to differentiate between move operations and really fast delete + create operations. However, some of the variable and class abstraction naming reflects the older understanding. Please update to reflect this new understanding. (this is more the type of complexity we’re going for)
-We weren’t using underscores to denote private functions. Please update the class to do so. (too easy)
-Implement async/await support for all existing callback-based API methods while maintaining backward compatibility.
-Implement async/await support for all existing callback-based API methods while maintaining backward compatibility. Make sure all changes you make are production ready quality code. (explicitly instructs model to make prod ready)
-
-Successive Turns
-All conversations with the model should require at least 2+ turns (2+ user prompts and 2+ model response pairs). Followup prompts after your first turn are treated differently. These prompts should adhere to the following criteria:
-The scope that was initially set in the first turn is kept the same. There should be no scope creep.
-You are prompting the model akin to a PR reviewer providing comments and specific guidance. You are steering it towards making code changes approvable and production ready.
-At the end of the conversation, the model has made changes within the repo that you are confident would genuinely be approved by codebase maintainers.
-You are steering the model as an expert. You are not passively steering the model and depending on it to be the expert.
-In contrast to the first-turn prompt, successive turns should be highly prescriptive about how the model should improve on its implementation towards a state of production readiness (without being contrived).
-Avoid following a script or a templated path that could be applied generically to any conversation you have with the model. Aim to steer the model in ways that are unique to the particular circumstances taking place. Consider this steer example: “Make sure documentation is written for the new feature, and follows the style and practices of the codebase”. This steer is generic and could apply to any conversation.
-
-Good
-Bad
-Please set a variable for the added conditional in ImpressionFactory to dry up the code. This is complex async queue logic that is difficult to simplify down further, but still not easiest to read. The variable keeps it self-documenting. As such you can remove the code comment over that line too since it’ll become redundant. You’ve added enough tests, but you included one vetting for exponential backoff that actually falsely passes despite not truly being something you implemented. I agree it’s in scope so do add it, but also make sure the test can’t falsely pass. (This followup prompt steers prescriptively and demonstrates expertise. You aren’t just telling the model to be good, you’re teaching it what good looks like)
-Please review your code changes to make sure they are minimal. No unnecessary complexity. Make sure to follow best practices for production readiness. You added tests, but I only see a few, so you’ll want to make sure edge cases are captured too. Document the new feature.
-
-(Consistently steering the model in this way can lead to removal from the project. You are here, because you bring coding expertise. This type of steering is something the LLM could do itself, and reflects either a lack of attention/effort or the prerequisite skills required to engage in this project meaningfully.)
-
-Definition of Production Ready
-Production ready code should make these considerations when relevant:
-Implement the requested scope completely
-Handle legitimate edge cases
-Consider security implications
-Avoid unnecessary comments, chain-of-thought, or explanations of the obvious
-Match the codebase’s style
-Use appropriate abstractions
-Include comprehensive tests if the codebase has them
-Reviewing model outputs
-Ensure the model:
-Follows software engineering best practices
-Writes appropriate documentation
-Uses git effectively
-Reviews its own work
-Clarifies requirements, edge cases, and expectations when necessary
-Produces production-ready code
-
-Provide feedback exactly as you would on a regular PR.
-Definition of done
-The interaction is complete when the code is production-ready to the best of your judgment.
-Provide Your Ratings and Annotations
-On each conversation turn, after both Model A and Model B responses complete you will be prompted to fill out a set of ratings and annotations, as well as a summary of what each model did and didn’t do well.
-
-Start by writing the pros and cons for each model response. When in doubt, focus more on the negatives. Abstain from giving an overall preference rating until after you’ve given all individual ratings along the seven grading axes.
-
-Each individual grading axis rating does not need to align with your overall preference rating, but the overall preference rating should reflect the combined individual ratings taken as a whole.
-
-If two models produce equivalent, or near-equivalent, sets of changes, you should use middle-ratings for all applicable categories. Only use the N/A rating if the code changes truly do not apply to the task specified in the prompt.
-
-In the overall preference justification writeup, please write a minimum of 3-5+ sentences clearly articulating the reason for your preference of model response.
-Submission Steps
-When using the custom Claude Code CLI tool for tasking on Human Preferences Prod, there are additional items we need to collect. Please fill out this form for each task submission.
-
-Before launching claude-hfi, begin filling out the form by including:
-
-Add the commit hash before beginning the conversation with Claude Code. Use the command: git rev-parse HEAD.
-Upload the codebase at this point, but remove unnecessary folders that inflate the size, such as node_modules, or venv. Run this command from the parent directory just outside the codebase: tar -cf codebase-name.tar ./codebase-path.
-
-Start claude-hfi either in --vscode or --tmux and add the UUID to the form right away.
-
-Include the task UUID which you can find in the Claude Code terminal.
-
-
-After completing your conversation (3+ turns), obtain the complete diff of the accepted changes made to the codebase after all ratings have been made. Use the command git diff commit_hash > ~/<uuid>final.diff. Make sure the commit_hash is replaced with the same commit hash you obtained at the start of the conversation when you executed git rev-parse HEAD earlier.
-Rubric Axes
-You may have noticed that explainers for each axis are provided in the cli by pressing ? on your keyboard. To help, we’ve extracted that information out below for convenience too. These aren’t exhaustive considerations, but especially if you struggle to identify code improvements to meet the 3+ turn minimum, you should look at these questions. It’s highly unlikely that there aren’t some lingering code quality issues.
-Which code has better logic and correctness?
-• Does the implementation match the intended behavior?
-• Are edge cases and error conditions properly handled?
-• Is the control flow clear and free of subtle bugs?
-• Are there any off-by-one errors, null pointer exceptions, or race conditions?
-• Is the algorithm/approach correct for the problem being solved?
-• Are boundary conditions (empty inputs, maximum values, etc.) handled correctly?
-Which code has better naming and clarity?
-• Do variable, function, and class names clearly express their purpose?
-• Is domain terminology used consistently throughout?
-• Are boolean names and conditions expressed positively when possible?
-• Do names avoid ambiguous abbreviations or insider knowledge?
-• Are assumptions about inputs, outputs, or behavior clearly documented?
-• Would a new developer understand what each component does from its name alone?
-• Are units clear in variable names (e.g., delaySeconds vs delay)?
-Which code has better organization and modularity?
-• Are functions/methods focused on a single responsibility?
-• Is there duplicate code that should be extracted into reusable functions?
-• Are source files reasonably sized (not thousands of lines)?
-• Are functions/methods concise and focused (not hundreds of lines)?
-• Is related functionality grouped together logically?
-• Are abstraction levels consistent (not mixing high and low-level operations)?
-• Is there proper separation of concerns (I/O separate from business logic)?
-• Does each class have high cohesion (all methods relate to its purpose)?
-• Is cyclomatic complexity reasonable (avoiding deeply nested code)?
-• Are there parallel implementations of the same functionality?
-Which code has better interface design?
-• Are APIs intuitive and hard to misuse?
-• Do function signatures minimize coupling (avoiding unnecessary parameters)?
-• Are return values and side effects predictable and well-documented?
-• Is mutability controlled and explicit?
-• Do functions have reasonable parameter counts (≤5, using objects for complex configs)?
-• Are return types consistent (avoiding different types based on conditions)?
-• Is it clear what each function does without reading its implementation?
-• Are required vs optional parameters clearly distinguished?
-• Do interfaces follow established patterns and conventions?
-Which code has better error handling and robustness?
-• Are specific exception types used with contextual error messages?
-• Is there a consistent error handling strategy (fail fast vs recovery)?
-• Is input validation performed early at system boundaries?
-• Are errors properly propagated rather than silently swallowed?
-• Is resource management handled properly (files closed, memory freed)?
-• Are there any bare except clauses that could hide bugs?
-• Do error messages provide enough context to debug issues?
-• Are partial failures handled gracefully?
-• Is defensive programming used appropriately (not excessively)?
-Which code has better comments and documentation?
-• Do comments explain WHY something is done, not WHAT is being done?
-• Are complex algorithms or business logic clearly explained?
-• Have comments been updated to match code changes?
-• Are there any AI-generated chain-of-thought comments that should be removed?
-• Are there placeholder comments saying code was removed/replaced?
-• Is there appropriate documentation for public APIs?
-• Are edge cases and non-obvious behavior documented?
-• Are there too many obvious comments that add noise?
-• Do comments provide value to future maintainers?
-Which code is more ready for review/merge?
-• Is there any debug code, print statements, or console.log calls?
-• Has all commented-out code been removed?
-• Is the code properly formatted according to project standards?
-• Are all temporary files, build artifacts, or test outputs removed?
-• Does the code follow the established conventions for the codebase?
-• Are commit messages clear and follow project guidelines?
-• Is version control hygiene maintained (no large binary files, etc.)?
-• Are all tests passing and coverage adequate?
-• Has the code been linted and does it pass static analysis?
-• Are there any hardcoded values that should be configurable?
-• Is sensitive information (passwords, keys) properly handled?
-"
-
-and these too
-"
-Code Human Preference Tips
-Updated December 11th, 2025
-The purpose of this document is to provide some tips and clarifications to help boost the
-quality of your work contributing to the Code Human Preference Prod project. Thank you to
-everyone for your hard work on this project so far!
-
-Important Reminders
-Please ensure conversations are always 2+ turns in length. This means at least 2
-user prompts, 2 model responses, and 2 ratings + comments.
-Come up with original prompts. We see a lot of "add a CLI flag" style prompts that
-were essentially seeded or too closely inspired from the examples provided in the
-official project instructions.
-Make sure to write thorough and detailed comments with your ratings. This is not
-optional.
-- Please refrain from prompting the LLM adversarially. Prompts should always reflect
-genuine requests a contributor to the codebase would actually make.
-Al use of any kind in this project is strictly prohibited apart from using it mildly to
-introspect and understand a new codebase if that saves you time.
-
-On another note, we also noticed several submissions ended prematurely while there were
-still obvious issues in the final solution worth steering the model to self-correct. Please
-take care to ensure conversations do not end while any of the following issues are still
-present:
-- The model never runs the lint, tests, and/or other checks to verify changes are
-working as expected and that no existing functionality is breaking (i.e. regression
-checks).
-The model commits a bunch of unnecessary markdown/txt files. These are
-usually summaries, explanations of changes, how-to guides, step by step
-breakdowns, etc. These files typically don't align with the codebase's
-documentation practices, and are often about helping the user in the conversation
-rather than helping the user arrive at PR ready code changes.
-The model creates custom impromptu test verification scripts that don't properly
-integrate into the codebase's test suites. The conversation ends with those scripts
-wrongly included in the final commit.
-The model creates backup versions of files, but they are left in the final commit.
-If you see the model do this, you should steer the model to delete them.
-
-If you spot other common failure patterns across multiple tasks / conversations feel free
-to voice them in the discord chat!
-
-Rubric Axes
-On each conversation turn you must rate the model responses against a grading rubric.
-These aren't exhaustive considerations, but especially if you struggle to identify code
-improvements to meet the 2+ turn minimum, you should look at these questions for
-inspiration. It's highly unlikely that there aren't some lingering code quality issues.
-
-Which code has better logic and correctness?
-. Does the implementation match the intended behavior?
-. Are edge cases and error conditions properly handled?
-. Is the control flow clear and free of subtle bugs?
-. Are there any off-by-one errars, null painter exceptions, or race conditions?
-. Is the algorithm/approach correct for the problem being solved?
-. Are boundary conditions (empty inputs, maximum values, etc.) handled correctly?
-
-Which code has better naming and clarity?
-. Do variable, function, and dass names clearly express their purpose?
-. Is domain terminalagy used consistently throughout?
-. Are boolean names and conditions expressed positively when possible?
-. Do names avoid ambiguous abbreviations or insider knowledge?
-. Are assumptions about inputs, outputs, or behavior clearly documented?
-. Would a new developer understand what each component does from its name alone?
-. Are units clear in variable names (e.g, delaySeconds vs delay)?
-
-Which code has better organization and modularity?
-. Are functions/methods focused on a single responsibility?
-. Is there duplicate code that should be extracted into reusable functions?
-. Are source files reasonably sized (not thousands of lines)?
-. Are functions/methods concise and focused (not hundreds of lines)?
-. Is related functionality grouped together logically?
-. Are abstraction levels consistent (not mixing high and low-level operations)?
-. Is there proper separation of concerns (I/O separate from business logic)?
-. Does each class have high cohesion (all methods relate to its purpose)?
-. Is cyclomatic complexity reasonable (avoiding deeply nested code)?
-Are there parallel implementations of the same functionality?
-Prompt Dos and Don'ts
-
-Prompting
-To properly prompt the model, you should adhere to the following:
-. The prompt should be original. Do not use Al or copy the examples from the
-instructions.
-. Clearly define the scope of your prompt, do not be ambiguous.
-. The prompt should align with the project's direction and goals.
-
-DOs
-
-Initial Prompt
-- The initial prompt should define a clear scope that will be followed
-throughout the task.
-- The initial prompt should align with the project's goals and direction.
-- The initial prompt should be realistic and achievable.
-Follow-Up Prompts
-- Follow-up prompts should steer the direction of the task towards PR
-readiness.
-- Follow-up prompts should stay within the scope of the initial prompt.
-Follow-up prompts should encourage writing tests if the request is a feature.
-- Follow-up prompts should make sure that existing functionality is not broken
-and there are no regressions.
-
-DONTs
-Initial Prompt
-- The initial prompt should not have many radically different feature requests
-that aren't related to each other.
-The initial prompt should not be too vague or open-ended.
-The initial prompt should not request the model to use real-time, current
-information or data.
-
-- The initial prompt should not ask the model to use the Internet. It does not
-have access to the internet.
-Follow-Up Prompts
-- The follow-up prompts should not introduce new features that don't fit
-within initial prompt scope.
-The follow-up prompts should not "break the 4th wall" and complain about
-platform-related issues. These are not related to the model itself.
-
-Examples of Prompts
-
-Good
-
-cmgh4kukk000207231c447kqq
-Repo https://github.com/margbritt/Syglorix/
-Turn 1:
-I would like to extend the CLI command for initializing an empty project. I would like
-to provide the ability to initialize the project with different templates. Evaluate the
-project and come up with the best approach. I want the template command invoked
-via this flag -t/ -- template so the command would look something like 'syqlorix init
-my_app -- template minimal' or 'syqlorix init my_app -t api'. I want you to start with
-two templates minimal and possibly tailwind .. Look at the demo files and see how
-you can leverage those to help create this new functionality. I want you to deliver
-something that is PR ready.
-
-Turn 2
-Great start, I noticed that you didn't leverage the demo files to help create the
-templates also putting all templates in a single templates.py doesn't seem very
-easily maintainable so please come up with a better design for that. The API
-template has a questionable approach as well - using DOM manipulation rather
-than HTTP response. The minimal template has styles which is not exactly minimal
-and the styles should be omitted for it to be truly minimal.
-
-Turn 3
-I noticed you removed some of the existing templates from the templates.py file,
-please include the api and components templates as well. I also noticed that you
-still include both setup.py file and pyproject.toml manifest. Please resolve these
-issues
-
-Turn 4
-Great work, I noticed you included a setup.cfg file - is this file necessary? Also the
-test files being test_cli_templates.py and test_tempaltes.py can be consolidated or
-more properly integrated, having these two file names is a bit confusing. Lastly I
-noticed there is no error handling for template rendering, maybe adding template
-validation tests that actually try to import/execute the generated files. We're very
-close so let's get this PR ready !
-
-cmgh4lty4000107072g17qmx7
-Turn 1
-Add a -- show flag which when provided a file conversion shows a sample of the
-pdf being converted to markdown. It should output some text, less than 100
-characters from the pdf and then show it as markdown while the conversion
-process is running. For example python3 -- show usage.py
-
-cmgh4gkva9ow407923ojiixz2
-Turn 1
-as it stands, the args that get passed in for -- target-dir and -- target-file when this
-program gets run are not validated, which is obviously a bad thing that can lead to
-all sorts of problems down the road. I need you to validate the args for -- target-dir
-and -- target-file to make sure they are what is expected.
-
-cmgh6iz62ab1z0715nrvtepwr
-Turn 1
-Add a logging middleware to the FastAPI-MCP library that logs all incoming MCP
-tool calls and their responses. \nThe middleware should: - Log the tool name being
-called - Log the input parameters - Log the response (or error if one occurs) - Use
-Python's standard logging module - Be configurable via a parameter when
-initializing FastApiMCP Example usage: 'python mcp = FastApiMCP(app.
-
-enable_logging=True)
-
-cmgh6inwnpdeu0772jqbse7tn
-Turn 1:
-Add timeout support for MCP tool calls in the FastAPI-MCP library. When a tool
-takes too long to execute, it should timeout gracefully.
-
-Bad
-
-cmgh4badiay110742bra4i70d
-Turn1:
-Add a non-interactive dry-run validation mode to the ollmcp CLL In
-mcp_client_for_ollama/client.py's top-level Typer command, introduce a -- dry-run
-boolean flag. When -- dry-run is set, resolve servers exactly as the current CLI does
-( -- mcp-server, -- mcp-server-url, -- servers-json, -- auto-discovery), attempt
-connections using the existing ServerConnector, print a concise per-server summary
-in one pass (server name, type: script | sse | streamable_http | config, connected:
-true/false, tool_count if connected, and an explicit reason if skipped that echoes the
-exact URL or path), and then exit without launching the interactive chat loop. Return
-specific exit codes: 0 when at least one server connected successfully. 2 when one
-or more URL servers are unreachable; 3 when a provided config file or -- mcp-server
-path is invalid; 4 when no servers are discovered/resolved; 1 for any unexpected
-error. Add an optional -- http-timeout float (default 0.6s) that applies only to
-dry-run HTTP/SSE connectivity checks. Do not duplicate connection logic; reuse
-ServerConnector and helper utilities. Keep edits minimal and consistent with
-existing style (Typer option grouping and Rich output). Update CLI help so the new
-flags appear under General Options, and add a short README Usage snippet
-describing dry-run and the exit codes. Add deterministic unit tests in
-tests/test_dry_run.py: cover a mix of reachable and unreachable URLs (mock
-mcp_client_for_ollama.utils.connection.check_url_connectivity), an invalid
--- mcp-server path (exit 3), a missing auto-discovery file scenario, the "no servers
-resolved" case (exit 4), and a success path that reports tool counts (mock
-ClientSession.list_tools). Use small, meaningful commits and ensure tests pass
-locally with uv venv && source .venv/bin/activate && uv pip install . && pytest -q.
-
-
-Notes: Example is too complex and contains too many separate features, this is
-unrealistic and overly verbose.
-
-cmgh4d4i0a9gr0715nj4aw4a5
-Turn 1
-refactor the logging and configuration system to make the output more human
-readable and pretty like a json file and show the code changes in files and example
-of the output
-
-Turn 2
-add a command line feature called letscheck that analyzes the current python
-project and reports potential issues with a very detailed, human readable format
-
-Turn 3
-add a new tool called Smart-log-analyzer that scans all the logs, classifies them
-(info,warning,error,critical) and explain each issue clearly with cause and fix with
-best solution up to 2 solutions, and generate a professional json report with
-summaries and Al-based suggestions then merge it with the existing letscheck
-report into one final report file
-
-Notes: Example is vague and confusing and doesn't have clear direction. The
-follow-up prompts do not relate to each other and the overall task lacks a well
-defined scope.
-
-cmgh4hjei9yfk0716oc2wcbtb
-Turn 1
-Add support for configurable temperature and max_tokens parameters in
-OllamaModel. These should be optional arguments in the constructor, stored in
-params, and passed correctly to the Ollama HTTP API request payload. Write unit
-tests that verify different values are respected.
-
-Turn 2:
-We want to extend the SDK with support for Cohere. Create a new model class
-CohereModel inside src/strands/models/cohere.py, following the same structure as
-OpenAlModel and AnthropicModel. The model should support both synchronous
-(call) and asynchronous (invoke_async) usage, using Cohere's Chat API.
-
-Notes: The follow up prompt deviates significantly from the original prompt intent
-and does not stay within scope.
-
-Commenting/Rating Axis
-
-DOs
-- Comments should be written after every turn. (Turn is one model response to
-a human prompt)
-- Comments should accurately reflect the ratings and vice-versa.
-- Ratings should only be given when applicable (use N/A appropriately)
-Make sure the multi-axis rating actually reflects the comparative scores, so
-they aren't overly polarized to the point where one model's response looks
-completely useless even though both had similar shortcomings.
-
-DONTs
-- Comments should not be vague or general, such as "The code was good
-overall'
-Comments should not be missing
-
-Examples of Comments
-
-Good
-
-cmgh6iz62ab1z0715nrvtepwr
-
-Model A provides runnable test code that verifies initialization. Model B provides a
-summary report claiming everything works. Model A is better because it gives executable
-verification that users can run, while Model B only documents claims without providing the
-code to prove them. Executable tests beat status reports.
-
-Bad
-
-cmgh4d4i0a9gr0715nj4aw4a5
-
-the two responses are similar up to 80% but most of the time answer b is more specific,
-accurate, detailed but makes more space and execution time and sometimes with less
-visualization and human readability
-
-"
-
-
-
-I want you for this repo u are in to first completely analyze it and understand it really really well understand every single file really well 
-and generate me 10 main prompts with each having 3 other follow up prompts that follow these instructions as I will be using them ,, make sure they adhere to the instructions please
+# Glances Code Human Preferences - Prompt Collection
+
+This document contains 10 main prompts with 3 follow-up prompts each for the Glances system monitoring tool codebase. All prompts adhere to the Code Human Preferences CLI Edition instructions.
+
+---
+
+## Prompt Set 1: Plugin Configuration Validation
+
+### Main Prompt (Turn 1)
+
+Add input validation for plugin configuration values loaded from the config file. When plugins read their configuration settings through the Config class methods (get_int_value, get_float_value, get_bool_value), there's currently no validation that the values fall within acceptable ranges. This can lead to runtime errors or unexpected behavior when users provide invalid configuration values. Implement validation that ensures configuration values are within reasonable bounds for each plugin, with clear error messages when invalid values are detected.
+
+### Follow-up Prompt (Turn 2)
+
+The validation logic you added is good, but I noticed a few issues. First, the error messages should specify which configuration file was loaded so users know where to fix the problem - you can get this from `config.loaded_config_file()`. Second, the validation for refresh rates should ensure they're not just positive, but also have a reasonable maximum (like 3600 seconds) to prevent users from accidentally setting extremely long intervals. Third, you're validating in each plugin's `__init__`, but this means invalid configs only get caught when that specific plugin loads - instead, add a centralized validation method in the Config class that validates all plugin configurations at once during startup.
+
+### Follow-up Prompt (Turn 3)
+
+Good progress. However, the centralized validation method needs refinement. You're iterating through all sections, but you should only validate sections that correspond to actual plugins - check against `stats.getPluginsList()` to avoid false errors for non-plugin sections like `[global]` or `[outputs]`. Also, the validation rules you hardcoded should be defined as class attributes or constants in each plugin class (like `CONFIG_VALIDATION_RULES`) so they're maintainable and self-documenting. Finally, make sure the validation happens early enough in the startup sequence that it prevents Glances from starting with an invalid config, rather than failing partway through initialization.
+
+### Follow-up Prompt (Turn 4)
+
+Almost there. The validation rules as class attributes are much better, but you need to handle the case where a plugin doesn't define validation rules - currently it would raise an AttributeError. Use `getattr()` with a default empty dict. Also, I see you're logging warnings for invalid values but still allowing Glances to start - this should be configurable behavior. Add a `--strict-config` flag that makes validation errors fatal, while the default behavior falls back to safe defaults with warnings. Finally, add unit tests in `test_core.py` that verify the validation catches common misconfigurations like negative refresh rates, percentages over 100, and invalid threshold orderings.
+
+---
+
+## Prompt Set 2: Export Module Error Recovery
+
+### Main Prompt (Turn 1)
+
+Improve error handling and recovery in the export modules. Currently, if an export module (like InfluxDB, Prometheus, or Elasticsearch) encounters a connection error or export failure, it often silently fails or logs an error but doesn't attempt any recovery. Add a retry mechanism with exponential backoff for transient failures, and implement a circuit breaker pattern to temporarily disable exports that are consistently failing to prevent resource exhaustion and log spam.
+
+### Follow-up Prompt (Turn 2)
+
+The retry logic is a good start, but there are several issues. First, you're using `time.sleep()` for the backoff delays, which will block the entire Glances update cycle - this needs to be non-blocking. Track the next retry time and skip export attempts until that time is reached. Second, the circuit breaker state should be exposed through the plugin's stats so users can see which exports are currently failing in the UI. Third, you need to differentiate between retryable errors (network timeouts, temporary unavailability) and permanent errors (authentication failures, invalid configuration) - don't retry permanent errors.
+
+### Follow-up Prompt (Turn 3)
+
+Better, but the error classification logic is too simplistic. You're just checking exception types, but you need to inspect HTTP status codes for REST-based exports - 5xx errors are retryable, 4xx errors (except 429) are not. Also, the circuit breaker should have a half-open state where it periodically tests if the service has recovered, rather than staying permanently open after max failures. The state transitions need to be logged at INFO level so they appear in normal logs, not just DEBUG. Finally, add configuration options to `glances.conf` for retry behavior: `max_retries`, `initial_backoff_seconds`, and `circuit_breaker_threshold`.
+
+### Follow-up Prompt (Turn 4)
+
+Good improvements. However, you need to add proper cleanup in the export modules' `exit()` methods - if there are pending retries when Glances shuts down, they should be cancelled gracefully. The circuit breaker state should also be reset on Glances restart, not persisted. For the half-open state testing, make sure you're not testing too frequently - implement a minimum time in open state before attempting half-open (like 60 seconds). Also, the stats you're exposing should include not just current state, but also metrics like total_export_attempts, failed_exports, and last_success_timestamp. Add tests that verify the retry logic and circuit breaker state transitions.
+
+---
+
+## Prompt Set 3: Process Filtering Performance
+
+### Main Prompt (Turn 1)
+
+Optimize the process filtering performance in the processlist plugin. When users apply filters using the filter feature (GlancesFilter), the current implementation re-compiles regex patterns on every update cycle and applies them to every process. For systems with hundreds or thousands of processes, this creates unnecessary CPU overhead. Implement filter pattern caching and optimize the filtering algorithm to reduce the performance impact.
+
+### Follow-up Prompt (Turn 2)
+
+The regex caching helps, but you're still iterating through all processes for every filter check. Instead, you should compile all filter patterns into a single combined regex where possible, or at minimum short-circuit the evaluation when a process matches any filter. Also, I notice you're caching based on the filter string, but you're not invalidating the cache when the filter changes - you need to detect filter changes and clear the cache. The cache should also have a maximum size to prevent memory leaks if filters are changed frequently.
+
+### Follow-up Prompt (Turn 3)
+
+Good progress on the combined regex approach. However, you need to handle the case where filter_key is specified (like `username:nicolargo`) - these can't be combined into a single regex since they apply to different fields. Maintain separate code paths: one for simple name-based filters that can be combined, and one for key-specific filters. Also, the performance improvement should be measurable - add timing instrumentation that tracks how long filtering takes, and expose this in the debug output. Make sure the optimization doesn't change the filtering behavior - add tests that verify the same processes are filtered with and without the optimization.
+
+### Follow-up Prompt (Turn 4)
+
+The dual code path approach is working well. However, you need to add a benchmark to verify the performance improvement. Create a test in `test_perf.py` that generates a large mock process list (1000+ processes) and measures filtering time with various filter patterns. The optimized version should be at least 50% faster than the original. Also, I noticed you're not handling the case where regex compilation fails due to invalid user input - wrap the compilation in try-except and fall back to literal string matching if the regex is invalid. Finally, document the optimization in the code comments, explaining why the combined regex approach is faster.
+
+---
+
+## Prompt Set 4: Memory History Optimization
+
+### Main Prompt (Turn 1)
+
+Reduce memory consumption of the stats history feature. Currently, each plugin that has history enabled stores raw timestamp-value tuples in memory, and for systems running Glances for extended periods, this can consume significant memory. Implement a more memory-efficient history storage mechanism that uses downsampling for older data points while maintaining high resolution for recent data.
+
+### Follow-up Prompt (Turn 2)
+
+The downsampling approach is good, but you're applying it uniformly across all time ranges. Instead, implement a tiered approach: keep full resolution for the last hour, downsample to 1-minute averages for 1-24 hours ago, and downsample to 5-minute averages for older data. Also, you're creating new lists during downsampling which causes memory spikes - implement in-place downsampling that modifies the existing history structure. The downsampling should preserve min/max/avg values, not just averages, so users can still see peak values in historical data.
+
+### Follow-up Prompt (Turn 3)
+
+The tiered downsampling is much better, but there's an issue with the timestamp handling. When you downsample multiple points into one, you're using the first timestamp, but you should use the middle timestamp of the interval to accurately represent the time period. Also, the downsampling is happening synchronously during the update cycle - this could cause UI lag. Move the downsampling to a background thread that runs periodically (every 5 minutes) rather than on every update. Make sure the background thread properly handles the case where Glances is shutting down.
+
+### Follow-up Prompt (Turn 4)
+
+The background downsampling thread is working, but you need to add proper thread synchronization. The history data structure is being accessed by both the main update thread and the downsampling thread without locks, which could cause race conditions. Use `threading.Lock()` to protect history modifications. Also, add a configuration option `history_size` to `glances.conf` that lets users control how much history to keep - default to 24 hours but allow users to increase or decrease based on their needs. Add memory profiling tests that verify the new implementation uses significantly less memory than the original for long-running instances.
+
+---
+
+## Prompt Set 5: RESTful API Response Caching
+
+### Main Prompt (Turn 1)
+
+Add response caching to the RESTful API to reduce CPU usage when multiple clients are polling the same endpoints. Currently, every API request triggers a full stats serialization to JSON, even if the stats haven't changed since the last request. Implement a caching layer that serves cached responses when stats haven't been updated, with proper cache invalidation when stats are refreshed.
+
+### Follow-up Prompt (Turn 2)
+
+The basic caching works, but you're caching the entire response body as a string, which still requires JSON serialization on the first request after each update. Instead, cache the Python dict/list objects and only serialize to JSON when needed - this allows you to also support other formats (like MessagePack) without re-computing the data. Also, you're using a simple dict for the cache, but you need to add cache size limits and implement an LRU eviction policy to prevent unbounded memory growth if clients request many different endpoint combinations.
+
+### Follow-up Prompt (Turn 3)
+
+Good improvement with the object-level caching. However, the cache invalidation is too aggressive - you're invalidating the entire cache on every stats update, but some endpoints (like `/api/3/system`) return data that changes very infrequently. Implement per-endpoint cache invalidation based on which plugins were actually updated. Also, add ETags to the HTTP responses so clients can use conditional requests (If-None-Match) to avoid transferring data that hasn't changed. The ETag should be a hash of the cached response data.
+
+### Follow-up Prompt (Turn 4)
+
+The per-endpoint invalidation and ETags are working well. However, you need to add cache statistics that are exposed through a `/api/3/cache/stats` endpoint showing hit rate, miss rate, and current cache size - this helps users understand if caching is effective. Also, the cache should respect the `Cache-Control` headers - add support for `no-cache` and `max-age` directives. Make sure the caching doesn't break the existing API contract - add tests that verify all endpoints return the same data with and without caching enabled. Finally, add a `--disable-api-cache` command-line flag for debugging purposes.
+
+---
+
+## Prompt Set 6: Plugin Dependency Resolution
+
+### Main Prompt (Turn 1)
+
+Improve the plugin dependency resolution system. Currently, the DAG (Directed Acyclic Graph) in `glances/plugins/plugin/dag.py` defines plugin dependencies, but the dependency resolution happens at import time and doesn't handle circular dependencies gracefully. Refactor the dependency system to detect circular dependencies early and provide clear error messages, and ensure plugins are initialized in the correct dependency order.
+
+### Follow-up Prompt (Turn 2)
+
+The circular dependency detection is good, but the error message just lists the plugins involved - it should show the actual dependency chain that creates the cycle (e.g., "A depends on B depends on C depends on A"). Also, you're doing topological sort for initialization order, but you're not handling the case where a plugin's dependency is disabled by the user - the dependent plugin should either auto-disable with a warning, or the dependency should be marked as optional vs required. Add a way to specify optional dependencies in the DAG.
+
+### Follow-up Prompt (Turn 3)
+
+Better error messages and optional dependencies are good improvements. However, the initialization order is still determined globally at startup, but some plugins support dynamic enable/disable at runtime. When a plugin is disabled at runtime, you need to check if any enabled plugins depend on it and either disable them too or handle the missing dependency gracefully. Also, the dependency information should be exposed in the plugin's metadata so the UI can show users why a plugin is disabled (e.g., "Disabled: required dependency 'processcount' is not available").
+
+### Follow-up Prompt (Turn 4)
+
+The runtime dependency handling is working, but you need to add validation that the DAG structure itself is correct - currently if someone adds a dependency to a non-existent plugin, it silently fails. Add a validation function that runs during development (perhaps in the test suite) that verifies all dependencies reference real plugins. Also, the dependency resolution should be documented - add a section to the developer documentation explaining how to add dependencies when creating new plugins. Finally, add tests that verify the initialization order is correct for various dependency scenarios, including optional dependencies and disabled plugins.
+
+---
+
+## Prompt Set 7: SNMP Plugin Timeout Handling
+
+### Main Prompt (Turn 1)
+
+Improve timeout handling in the SNMP plugin. When monitoring remote systems via SNMP, network latency or unresponsive devices can cause the SNMP queries to hang, blocking the entire Glances update cycle. Implement proper timeout handling with configurable timeout values, and ensure that slow SNMP responses don't block other plugins from updating.
+
+### Follow-up Prompt (Turn 2)
+
+The timeout configuration is good, but you're still making SNMP calls synchronously in the main update thread. Even with timeouts, this means a slow SNMP device can delay the entire UI update. Move the SNMP queries to a background thread or use async I/O so they don't block the main update loop. The plugin should return the last known good values while waiting for the SNMP query to complete. Also, you need to handle the case where multiple SNMP OIDs are queried - they should be batched into a single SNMP request where possible to reduce network round-trips.
+
+### Follow-up Prompt (Turn 3)
+
+The async SNMP queries are working, but there's a race condition - if the SNMP query completes while the main thread is reading the stats, you could get inconsistent data (some old values, some new). Use proper locking or atomic updates to ensure stats are updated atomically. Also, the batched OID requests are good, but you need to handle partial failures - if some OIDs succeed and others timeout, you should update the successful ones rather than discarding all results. Add a status indicator to the stats showing the age of the data and whether the last update succeeded.
+
+### Follow-up Prompt (Turn 4)
+
+Good improvements on the atomic updates and partial failure handling. However, you need to add connection pooling for SNMP sessions - currently you're creating a new SNMP session for each query, which is inefficient. Reuse sessions across updates and only recreate them if they fail. Also, add SNMP v3 authentication support with proper credential handling - credentials should never be logged even in debug mode. The timeout values should be adaptive - if a device consistently responds quickly, reduce the timeout; if it's consistently slow, increase it within configured bounds. Add tests that simulate slow and unresponsive SNMP devices to verify the timeout handling works correctly.
+
+---
+
+## Prompt Set 8: Docker Container Metrics Enhancement
+
+### Main Prompt (Turn 1)
+
+Enhance the Docker container monitoring in the containers plugin to include network I/O statistics per container. Currently, the plugin shows CPU, memory, and disk I/O, but network statistics are missing even though Docker exposes this data through its API. Add per-container network bytes sent/received and packet counts to the container stats.
+
+### Follow-up Prompt (Turn 2)
+
+The network stats are being collected, but you're making a separate API call for each container's network stats, which is inefficient when monitoring many containers. The Docker API supports getting stats for all containers in a single streaming connection - refactor to use the streaming stats API. Also, the network stats you're showing are cumulative counters, but users typically want to see rates (bytes/sec). Calculate and display the rate by comparing with the previous update's values, similar to how disk I/O rates are calculated.
+
+### Follow-up Prompt (Turn 3)
+
+The streaming API and rate calculations are good, but there's an issue with containers that have multiple network interfaces - you're only showing stats for the first interface. Sum the stats across all interfaces to show total container network usage, but also provide a way to see per-interface breakdown in the detailed view. Also, the rate calculation fails on the first update because there's no previous value - handle this gracefully by showing 0 or N/A for the first update. Add proper error handling for containers that don't have network stats available (like containers in host network mode).
+
+### Follow-up Prompt (Turn 4)
+
+Good handling of multi-interface containers and edge cases. However, the network stats should respect the same hide/show configuration as other container stats - check the `hide` configuration option. Also, add unit conversion for network rates - show bytes/sec for low rates, KB/s for medium, MB/s for high, using the same `auto_unit()` function used elsewhere in Glances. The stats should be included in the JSON export and RESTful API responses. Finally, add tests that verify network stats are correctly calculated for containers with different network configurations (bridge, host, none).
+
+---
+
+## Prompt Set 9: Configuration File Hot Reload
+
+### Main Prompt (Turn 1)
+
+Add support for hot-reloading the configuration file without restarting Glances. Currently, if users modify `glances.conf`, they need to restart Glances for changes to take effect. Implement a file watcher that detects configuration file changes and reloads the configuration, applying changes to plugins that support runtime reconfiguration.
+
+### Follow-up Prompt (Turn 2)
+
+The file watching works, but you're reloading the entire configuration and reinitializing all plugins, which causes a noticeable pause in the UI and resets all stats history. Instead, implement selective reloading - compare the old and new configuration to determine which plugins are affected, and only reload those plugins. Also, some configuration changes can't be applied at runtime (like changing the server port) - detect these and log a warning that a restart is required. The reload should be atomic - if the new config file has syntax errors, keep using the old config rather than leaving Glances in a broken state.
+
+### Follow-up Prompt (Turn 3)
+
+The selective reloading is much better, but you need to handle the case where the config file is being edited - text editors often write to a temporary file and then rename it, which can trigger multiple file system events. Debounce the reload events so you only reload once after the file has stabilized (wait 1 second after the last change event). Also, the configuration validation you added earlier should run before applying the new config - if validation fails, keep the old config and show an error notification in the UI. Add a manual reload command (maybe a keyboard shortcut in the TUI) so users can trigger reload without modifying the file.
+
+### Follow-up Prompt (Turn 4)
+
+The debouncing and validation are working well. However, you need to add proper notification to users when a reload happens - in the TUI, show a brief message at the top of the screen; in the web UI, send a notification; in the API, include a `config_reload_timestamp` field. Also, the file watcher should handle the case where the config file is deleted and recreated - currently it loses the watch. Use a directory watcher instead of a file watcher to handle this. Add a `--disable-config-reload` flag for users who don't want this feature. Finally, add tests that verify configuration changes are correctly applied without restarting Glances, and that invalid configs are rejected.
+
+---
+
+## Prompt Set 10: Alert Action Script Templating
+
+### Main Prompt (Turn 1)
+
+Enhance the alert action script feature to support more flexible templating. Currently, action scripts receive a limited set of variables, and the templating is done with simple string replacement. Extend the templating system to use Jinja2 (which is already a dependency) and provide access to the full plugin stats context, not just the specific field that triggered the alert.
+
+### Follow-up Prompt (Turn 2)
+
+The Jinja2 templating is working, but you're passing the entire stats object to the template, which could expose sensitive information if users share their action scripts. Add a whitelist of safe fields that can be accessed in templates, and document which fields are available for each plugin. Also, the template rendering errors are being logged but the action script still executes with empty variables - instead, skip executing the action if template rendering fails, and make the error more visible (maybe add it to the alerts list). Add helper functions to the template context like `format_bytes()` and `format_time()` for common formatting needs.
+
+### Follow-up Prompt (Turn 3)
+
+The field whitelist and helper functions are good additions. However, you need to add sandboxing to the Jinja2 environment to prevent users from executing arbitrary Python code in templates - use `jinja2.sandbox.SandboxedEnvironment` instead of the regular `Environment`. Also, the template rendering should have a timeout to prevent infinite loops or very slow templates from blocking the alert system. Add template validation when the config is loaded - try to render each template with dummy data and report errors early rather than waiting for an alert to trigger.
+
+### Follow-up Prompt (Turn 4)
+
+The sandboxing and validation are important security improvements. However, you need to add better debugging support for action templates - when a template fails to render, the error message should show the template source and the line where the error occurred. Also, add a dry-run mode for testing action scripts (maybe a `--test-actions` flag) that triggers all configured actions with dummy alert data so users can verify their templates work correctly. The template context should include not just current values but also historical context (like previous value, trend direction). Finally, add examples of useful action templates to the documentation, like sending formatted Slack messages or creating detailed email alerts.
+
+---
+
+## Summary
+
+These 10 prompt sets cover diverse aspects of the Glances codebase:
+
+1. **Plugin Configuration Validation** - Input validation and error handling
+2. **Export Module Error Recovery** - Resilience and retry logic
+3. **Process Filtering Performance** - Optimization and caching
+4. **Memory History Optimization** - Memory management and data structures
+5. **RESTful API Response Caching** - Web API performance
+6. **Plugin Dependency Resolution** - Architecture and initialization
+7. **SNMP Plugin Timeout Handling** - Network I/O and async operations
+8. **Docker Container Metrics Enhancement** - Feature addition and API integration
+9. **Configuration File Hot Reload** - File system monitoring and dynamic updates
+10. **Alert Action Script Templating** - Templating and security
+
+Each prompt set:
+
+- Defines a clear, realistic scope appropriate for a single PR
+- Avoids prescribing implementation details in the first turn
+- Provides progressively more specific technical guidance in follow-ups
+- Stays within the original scope without scope creep
+- Demonstrates expertise through specific, actionable feedback
+- Requires production-ready code with proper error handling, testing, and documentation
